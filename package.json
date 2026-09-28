@@ -12,7 +12,8 @@
     "db:setup": "node scripts/db-setup.mjs",
     "check:keys": "node scripts/check-keys.mjs",
     "inspect": "node scripts/inspect.mjs",
-    "clear:test": "node scripts/clear-test-data.mjs"
+    "clear:test": "node scripts/clear-test-data.mjs",
+    "update:keys": "node scripts/update-key.mjs"
   },
   "dependencies": {
     "@google/genai": "^2.24.0",

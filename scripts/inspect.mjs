@@ -1,30 +1,29 @@
 // Prints what is in the database, for verification: npm run inspect
+//   (uses SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY, no database password needed)
 import dotenv from 'dotenv';
-import pg from 'pg';
+import { createClient } from '@supabase/supabase-js';
 dotenv.config({ path: '.env.local', quiet: true });
+const sb = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY, { auth: { persistSession: false } });
+const must = ({ data, error }) => { if (error) throw new Error(error.message); return data; };
 
-const c = new pg.Client({ connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: false } });
-await c.connect();
-const cands = (await c.query('select id, name, email, phone, role_applied, status, duplicate_of, flags, cv_content from candidates order by id')).rows;
+const cands = must(await sb.from('candidates').select('id, name, email, phone, role_applied, status, duplicate_of, flags, cv_content, sent_at').order('id'));
+const rubric = must(await sb.from('rubric_criteria').select('id, role, name, weight, position').order('position'));
+console.log(`rubric: ${['PM', 'SPM'].map((r) => `${r} ${rubric.filter((x) => x.role === r).length} criteria = ${rubric.filter((x) => x.role === r).reduce((s, x) => s + x.weight, 0)}`).join(', ')}`);
+console.log(`candidates: ${cands.length}`);
 for (const x of cands) {
   const tokens = [x.name, x.email, x.phone].filter(Boolean).flatMap((v) => v.split(/\s+/)).filter((t) => t.length >= 3);
   const leaks = tokens.filter((t) => x.cv_content?.toLowerCase().includes(t.toLowerCase()));
-  console.log(`\n#${x.id} ${x.name} <${x.email}> ${x.phone} | applied ${x.role_applied} | ${x.status}${x.duplicate_of ? ` | duplicate of #${x.duplicate_of}` : ''}`);
-  console.log(`  PII in cv_content: ${leaks.length ? 'LEAK ' + leaks.join(',') : 'none'} | starts: ${x.cv_content?.slice(0, 70).replace(/\n/g, ' / ')}`);
+  console.log(`\n#${x.id} ${x.name} <${x.email}> | applied ${x.role_applied} | ${x.status}${x.sent_at ? ` at ${x.sent_at}` : ''}${x.duplicate_of ? ` | duplicate of #${x.duplicate_of}` : ''}`);
+  console.log(`  personal details in AI-visible CV text: ${leaks.length ? 'LEAK ' + leaks.join(',') : 'none'}`);
   for (const f of x.flags) console.log(`  FLAG ${f.type}: ${f.detail.slice(0, 200)}`);
-  const t = (await c.query('select role, weighted_total, scored_weight from score_totals where candidate_id=$1 order by role', [x.id])).rows;
-  if (t.length) console.log('  totals: ' + t.map((r) => `${r.role}=${r.weighted_total ?? 'null'} (${r.scored_weight}% evidenced)`).join('  '));
-  for (const role of ['PM', 'SPM']) {
-    const s = (await c.query(
-      'select r.name, s.score, s.quote_verified, left(s.evidence, 70) as ev, s.probe_question from scores s join rubric_criteria r on r.id = s.criterion_id where s.candidate_id = $1 and s.role = $2 order by r.position',
-      [x.id, role],
-    )).rows;
-    for (const r of s) {
-      const detail = r.score === null ? `PROBE: ${r.probe_question?.slice(0, 90)}` : `"${r.ev}" ${r.quote_verified ? '✓' : '✗ unverified'}`;
-      console.log(`   ${role.padEnd(3)} ${String(r.score ?? 'null').padEnd(4)} ${r.name.slice(0, 30).padEnd(30)} ${detail}`);
-    }
+  const totals = must(await sb.from('score_totals').select('role, weighted_total, scored_weight').eq('candidate_id', x.id).order('role'));
+  if (totals.length) console.log('  totals: ' + totals.map((r) => `${r.role}=${r.weighted_total ?? 'null'} (${r.scored_weight}% evidenced)`).join('  '));
+  const scores = must(await sb.from('scores').select('role, criterion_id, score, evidence, quote_verified, probe_question').eq('candidate_id', x.id));
+  for (const s of scores.sort((a, b) => a.role.localeCompare(b.role) || a.criterion_id - b.criterion_id)) {
+    const cr = rubric.find((r) => r.id === s.criterion_id);
+    const detail = s.score === null ? `PROBE: ${s.probe_question?.slice(0, 90)}` : `"${s.evidence?.slice(0, 70)}" ${s.quote_verified ? '✓' : '✗ unverified'}`;
+    console.log(`   ${s.role.padEnd(3)} ${String(s.score ?? 'null').padEnd(4)} ${cr?.name.slice(0, 30).padEnd(30)} ${detail}`);
   }
-  const d = (await c.query('select brief_pm, brief_spm, email_type, email_subject, email_body from drafts where candidate_id = $1', [x.id])).rows[0];
+  const [d] = must(await sb.from('drafts').select('brief_pm, brief_spm, email_type, email_subject, email_body').eq('candidate_id', x.id));
   if (d) console.log(`  BRIEF PM: ${d.brief_pm ?? '-'}\n  BRIEF SPM: ${d.brief_spm ?? '-'}\n  EMAIL (${d.email_type}) "${d.email_subject}":\n    ${d.email_body.replace(/\n/g, '\n    ')}`);
 }
-await c.end();
