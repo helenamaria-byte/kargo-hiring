@@ -2,7 +2,11 @@
 import { useRouter } from 'next/navigation';
 import { useState } from 'react';
 import type { CardData } from '@/lib/dashboard';
+import type { EmailMode } from '@/lib/config';
 import type { Role } from '@/lib/scoring';
+
+const gmailUrl = (to: string, su: string, body: string) =>
+  `https://mail.google.com/mail/?view=cm&fs=1&to=${encodeURIComponent(to)}&su=${encodeURIComponent(su)}&body=${encodeURIComponent(body)}`;
 
 const fmt = (iso: string) => new Date(iso).toLocaleString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
 
@@ -13,7 +17,7 @@ async function call(url: string, method: string, body?: unknown) {
   return j;
 }
 
-export function CandidateCard({ c, role, emailConfigured, open }: { c: CardData; role: Role; emailConfigured: boolean; open: boolean }) {
+export function CandidateCard({ c, role, mode, open }: { c: CardData; role: Role; mode: EmailMode; open: boolean }) {
   const router = useRouter();
   const [name, setName] = useState(c.name ?? '');
   const [email, setEmail] = useState(c.email ?? '');
@@ -22,6 +26,9 @@ export function CandidateCard({ c, role, emailConfigured, open }: { c: CardData;
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const [busy, setBusy] = useState(false);
   const [sentAt, setSentAt] = useState(c.sentAt);
+  const [opened, setOpened] = useState(false);
+  const first = name.trim().split(/\s+/)[0] || '';
+  const merge = (t: string) => t.replace(/\{\{\s*first_name\s*\}\}/g, first);
 
   const run = async (fn: () => Promise<string>) => {
     setBusy(true); setMsg(null);
@@ -111,17 +118,34 @@ export function CandidateCard({ c, role, emailConfigured, open }: { c: CardData;
                   <button disabled={busy || !draftDirty} onClick={() => run(async () => { await call(`/api/drafts/${c.id}`, 'PATCH', { subject, body }); return 'Draft saved'; })}>Save edits</button>
                   <button
                     className="primary"
-                    disabled={busy || !emailConfigured || !email || contactDirty}
-                    title={!emailConfigured ? 'Email not configured' : contactDirty ? 'Save the contact details first' : ''}
+                    disabled={busy || !email || contactDirty || (/\{\{\s*first_name\s*\}\}/.test(subject + body) && !first)}
+                    title={contactDirty ? 'Save the contact details first' : ''}
                     onClick={() => {
-                      if (!confirm(`Send this ${c.draft!.type === 'invite' ? 'invite' : 'rejection'} to ${name || '(no name)'} <${email}> now?`)) return;
-                      run(async () => { const j = await call(`/api/send/${c.id}`, 'POST', { subject, body }); setSentAt(j.sentAt); return 'Sent'; });
+                      if (mode === 'resend') {
+                        if (!confirm(`Send this ${c.draft!.type === 'invite' ? 'invite' : 'rejection'} to ${name || '(no name)'} <${email}> now?`)) return;
+                        run(async () => { const j = await call(`/api/send/${c.id}`, 'POST', { subject, body }); setSentAt(j.sentAt); return 'Sent'; });
+                        return;
+                      }
+                      // Gmail mode: the real name is merged now, at send time, and the email opens in Arjun's Gmail.
+                      window.open(gmailUrl(email, merge(subject), merge(body)), '_blank', 'noopener');
+                      setOpened(true);
+                      run(async () => { await call(`/api/drafts/${c.id}`, 'PATCH', { subject, body }); return 'Opened in Gmail: press Send there, then mark it as sent here.'; });
                     }}
                   >
-                    Confirm &amp; Send
+                    {mode === 'gmail' ? 'Confirm & Send (opens Gmail)' : 'Confirm & Send'}
                   </button>
-                  {!emailConfigured && <span className="err">Email not configured: add RESEND_API_KEY and RESEND_FROM, then redeploy. Nothing will be sent until then.</span>}
-                  {emailConfigured && !email && <span className="err">Add an email address first.</span>}
+                  {mode === 'gmail' && opened && (
+                    <button disabled={busy} onClick={() => run(async () => { const j = await call(`/api/send/${c.id}`, 'POST', { subject, body, manual: true }); setSentAt(j.sentAt); return 'Marked as sent'; })}>
+                      I sent it: mark as sent
+                    </button>
+                  )}
+                  {mode === 'gmail' && (
+                    <a href={`mailto:${encodeURIComponent(email)}?subject=${encodeURIComponent(merge(subject))}&body=${encodeURIComponent(merge(body))}`} onClick={() => setOpened(true)} style={{ fontSize: 12 }}>
+                      or use your mail app
+                    </a>
+                  )}
+                  {!email && <span className="err">Add an email address first.</span>}
+                  {email && !first && /\{\{\s*first_name\s*\}\}/.test(subject + body) && <span className="err">Add the candidate&apos;s name first.</span>}
                   {contactDirty && <span className="flag">Save the contact details before sending.</span>}
                 </>
               )}

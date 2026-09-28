@@ -3,12 +3,13 @@ import { firstName } from '@/lib/pii';
 import { db, q } from '@/lib/supabase';
 
 // Sends exactly one email, for one candidate, only when Arjun clicks Confirm & Send.
+// With { manual: true } (Gmail mode) Arjun already sent it from his own Gmail; this only records it.
 export async function POST(req: Request, ctx: { params: Promise<{ id: string }> }) {
   const id = Number((await ctx.params).id);
-  if (!emailConfigured()) {
+  const { subject, body, manual } = await req.json();
+  if (!manual && !emailConfigured()) {
     return Response.json({ error: 'Email not configured: set RESEND_API_KEY and RESEND_FROM in Vercel, then redeploy.' }, { status: 503 });
   }
-  const { subject, body } = await req.json();
   if (typeof subject !== 'string' || !subject.trim() || typeof body !== 'string' || !body.trim()) {
     return Response.json({ error: 'Subject and body are required' }, { status: 400 });
   }
@@ -35,6 +36,7 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
     db().from('candidates').update({ sent_at: sentAt, status: 'sent' }).eq('id', id).is('sent_at', null).select('id'),
   );
   if (!claimed.length) return Response.json({ error: 'Already sent' }, { status: 409 });
+  if (manual) return Response.json({ ok: true, sentAt });
 
   const res = await fetch('https://api.resend.com/emails', {
     method: 'POST',

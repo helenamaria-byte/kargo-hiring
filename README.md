@@ -10,6 +10,11 @@ Upload CVs → personal details stripped in code → Gemini scores every CV on b
 3. `npm install && npm test && npm run dev`, then open http://localhost:3000.
 4. **Vercel**: `npx vercel`, add the same env vars in Project → Settings → Environment Variables (including `DASHBOARD_PASSWORD`), then `npx vercel --prod`.
 
+## Sending
+
+- **No Resend domain (current):** Confirm & Send opens the email in Arjun's Gmail with the real first name filled in. He presses Send in Gmail, then clicks **I sent it: mark as sent** on the card.
+- **With a verified Resend domain:** set `RESEND_FROM` (and optionally `RESEND_REPLY_TO`) in Vercel and redeploy; the same button then sends directly via Resend.
+
 ## Where the rules live
 
 | Rule | File |

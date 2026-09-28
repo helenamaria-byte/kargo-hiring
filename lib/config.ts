@@ -12,3 +12,8 @@ export function env(name: string): string {
 }
 
 export const emailConfigured = () => Boolean(process.env.RESEND_API_KEY && process.env.RESEND_FROM);
+
+// 'resend' sends from the server. Without a verified Resend domain, 'gmail' opens a ready email in
+// Arjun's Gmail instead; he presses Send there and marks the card as sent.
+export type EmailMode = 'resend' | 'gmail';
+export const emailMode = (): EmailMode => (emailConfigured() ? 'resend' : 'gmail');
