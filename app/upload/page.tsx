@@ -4,7 +4,7 @@ import { Nav } from '@/components/Nav';
 import { runDrafts } from '@/components/runDrafts';
 
 type Row = { file: File; state: 'queued' | 'processing' | 'scored' | 'duplicate' | 'error'; detail?: string };
-const CONCURRENCY = 3;
+const CONCURRENCY = 2;
 const MAX_BYTES = 4 * 1024 * 1024; // Vercel's request body limit is 4.5 MB
 
 export default function Upload() {
