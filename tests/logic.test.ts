@@ -118,3 +118,11 @@ test('PII: name taken from the file name when the CV has none, and still removed
   assert.ok(redacted.startsWith('Product Manager'), 'header kept when the name came from the file');
   assert.doesNotThrow(() => assertNoPII(redacted, pii));
 });
+
+test('PII: a phone number repeated back to back, or written without the country code, is fully removed', () => {
+  const cv = 'Product Manager\nx@example.com | +91 99014 28453+91 99014 28453 99014 28453 9901428453\nCall 99014-28453 anytime.';
+  const { pii, redacted } = extractPII(cv, '30_aman_borkar.pdf');
+  assert.ok(!/99014|28453|9901428453/.test(redacted), redacted);
+  assert.doesNotThrow(() => assertNoPII(redacted, pii));
+  assert.throws(() => assertNoPII('reach me on 9901428453', pii), /phone/);
+});

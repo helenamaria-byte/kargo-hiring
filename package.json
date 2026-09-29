@@ -13,7 +13,8 @@
     "check:keys": "node scripts/check-keys.mjs",
     "inspect": "node scripts/inspect.mjs",
     "clear:test": "node scripts/clear-test-data.mjs",
-    "update:keys": "node scripts/update-key.mjs"
+    "update:keys": "node scripts/update-key.mjs",
+    "verify": "node scripts/verify-batch.mjs"
   },
   "dependencies": {
     "@google/genai": "^2.24.0",

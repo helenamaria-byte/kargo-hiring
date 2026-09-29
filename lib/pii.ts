@@ -46,6 +46,12 @@ function tidyName(s: string): string {
 
 const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
+// The last 10 digits of a phone number, with any separators between them. Matches every way it is written.
+function phoneCoreRe(phone: string): RegExp {
+  const core = phone.replace(/\D/g, '').slice(-10);
+  return new RegExp(core.split('').join('[\\s().-]*'), 'g');
+}
+
 export function nameTokens(name: string | null): string[] {
   if (!name) return [];
   return name.split(/\s+/).map((t) => t.replace(/[.'’]/g, '')).filter((t) => t.length >= 2);
@@ -78,6 +84,8 @@ export function extractPII(raw: string, fileName?: string): { pii: PII; redacted
     .replace(EMAIL_RE, '[email removed]')
     .replace(PROFILE_URL_RE, '[profile link removed]');
   for (const p of phones) redacted = redacted.split(p).join('[phone removed]');
+  // Also catch the same number written again in any other way (repeated, no spaces, no country code).
+  for (const p of phones) redacted = redacted.replace(phoneCoreRe(p), '[phone removed]');
   if (name) {
     redacted = redacted.replace(new RegExp(escapeRe(name), 'gi'), '[name removed]');
     for (const t of nameTokens(name)) redacted = redacted.replace(new RegExp(`\\b${escapeRe(t)}\\b`, 'gi'), '[name removed]');
@@ -96,11 +104,7 @@ export function assertNoPII(text: string, pii: PII): void {
   const lower = text.toLowerCase();
   if (pii.email && lower.includes(pii.email.toLowerCase())) throw new Error('PII guard: email found in text bound for AI');
   if (/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/.test(text)) throw new Error('PII guard: an email address is present in text bound for AI');
-  if (pii.phone) {
-    const digits = pii.phone.replace(/\D/g, '');
-    const flexible = new RegExp(digits.split('').join('[\\s().-]*'));
-    if (flexible.test(text)) throw new Error('PII guard: phone number found in text bound for AI');
-  }
+  if (pii.phone && phoneCoreRe(pii.phone).test(text)) throw new Error('PII guard: phone number found in text bound for AI');
   for (const t of nameTokens(pii.name)) {
     if (t.length >= 3 && new RegExp(`\\b${escapeRe(t)}\\b`, 'i').test(text)) throw new Error('PII guard: candidate name found in text bound for AI');
   }
