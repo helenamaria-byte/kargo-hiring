@@ -3,7 +3,7 @@ import { env } from './config';
 import { assertNoPII, type PII } from './pii';
 
 let ai: GoogleGenAI | null = null;
-const model = () => process.env.GEMINI_MODEL || 'gemini-flash-latest';
+const model = () => process.env.GEMINI_MODEL || 'gemini-3.5-flash-lite';
 
 // Every AI call in the app goes through here, and every one is checked for PII first.
 export async function generateJSON<T>(opts: {

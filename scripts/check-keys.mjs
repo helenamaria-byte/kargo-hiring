@@ -13,7 +13,7 @@ console.log(`  (public access without the secret key → HTTP ${anon.status}, ex
 
 try {
   const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
-  const model = process.env.GEMINI_MODEL || 'gemini-flash-latest';
+  const model = process.env.GEMINI_MODEL || 'gemini-3.5-flash-lite';
   const r = await ai.models.generateContent({ model, contents: 'Reply with exactly: ok' });
   console.log(`✔ Gemini (${model}): "${r.text?.trim()}" [${r.modelVersion ?? ''}]`);
 } catch (e) {
