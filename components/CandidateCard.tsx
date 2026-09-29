@@ -167,6 +167,7 @@ function flagLabel(t: string) {
     name_not_detected: 'Name not found',
     name_from_file: 'Name from file name',
     role_assigned: 'Role assigned by score',
+    tied_cutoff: 'Tied at cut-off: review',
     email_not_detected: 'Email not found',
     other_role: 'Fits other role',
   } as Record<string, string>)[t] ?? t;

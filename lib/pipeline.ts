@@ -133,15 +133,20 @@ export async function rankings() {
   );
   const scored = new Set(totals.map((t) => t.candidate_id));
   const eligible = cands.filter((c) => scored.has(c.id));
+  // Each role's top 5 is drawn from the people who applied for that role, so every role gets 5 invites.
+  // Everyone is still ranked on both tabs; a strong fit for the other role is flagged on the card.
   const top: Record<Role, Set<number>> = { PM: new Set(), SPM: new Set() };
+  const cut: Record<Role, number | null> = { PM: null, SPM: null };
   for (const role of ROLES) {
-    const rows = eligible.map((c) => {
+    const rows = eligible.filter((c) => c.role_applied === role).map((c) => {
       const t = totals.find((x) => x.candidate_id === c.id && x.role === role);
       return { id: c.id, total: t?.weighted_total == null ? null : Number(t.weighted_total), scoredWeight: t?.scored_weight ?? 0 };
     });
-    rank(rows).filter((r) => r.total !== null).slice(0, TOP_N).forEach((r) => top[role].add(r.id));
+    const ranked = rank(rows).filter((r) => r.total !== null);
+    ranked.slice(0, TOP_N).forEach((r) => top[role].add(r.id));
+    cut[role] = ranked[TOP_N - 1]?.total ?? null;
   }
-  return { eligible, top };
+  return { eligible, top, cut };
 }
 
 export async function generateDrafts(limit = 3) {

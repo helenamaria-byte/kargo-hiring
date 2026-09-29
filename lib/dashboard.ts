@@ -1,3 +1,4 @@
+import { rankings } from './pipeline';
 import { ROLES, ROLE_TITLE } from './config';
 import type { Flag } from './pipeline';
 import { rank, TOP_N, type Role } from './scoring';
@@ -30,21 +31,27 @@ export async function loadDashboard(role: Role) {
   );
   const rankOf = new Map(ranked.map((r) => [r.id, r]));
 
-  // The other role's top 5, to flag candidates who fit the role they didn't apply for.
+  // Invites go to each role's top 5 among its own applicants (same rule the drafts use).
+  const { top, cut } = await rankings();
   const other: Role = role === 'PM' ? 'SPM' : 'PM';
-  const otherTotals = await q<any[]>(db().from('score_totals').select('*').eq('role', other));
-  const otherTop = new Set(
-    rank(otherTotals.filter((t) => cands.some((c) => c.id === t.candidate_id && !c.duplicate_of && c.status !== 'error'))
-      .map((t) => ({ id: t.candidate_id, total: t.weighted_total == null ? null : Number(t.weighted_total), scoredWeight: t.scored_weight })))
-      .filter((r) => r.total !== null).slice(0, TOP_N).map((r) => r.id),
+  const otherTotal = new Map(
+    (await q<any[]>(db().from('score_totals').select('candidate_id, weighted_total').eq('role', other))).map((t) => [t.candidate_id, t.weighted_total == null ? null : Number(t.weighted_total)]),
   );
 
   const cards: CardData[] = cands.map((c) => {
     const r = rankOf.get(c.id);
     const d = drafts.find((x) => x.candidate_id === c.id);
     const flags: Flag[] = [...(c.flags ?? [])];
-    if (otherTop.has(c.id) && c.role_applied !== other) {
-      flags.push({ type: 'other_role', detail: `Top ${TOP_N} for ${ROLE_TITLE[other]} too (applied for ${ROLE_TITLE[c.role_applied as Role]}). The draft email is for the role applied for.` });
+    const applied = c.role_applied as Role;
+    const mine = r?.total ?? null;
+    // Scores well enough to be in the other role's top 5 if they were considered for it.
+    const theirOther = otherTotal.get(c.id) ?? null;
+    if (applied === role && cut[other] !== null && theirOther !== null && theirOther >= cut[other]!) {
+      flags.push({ type: 'other_role', detail: `Would also make the ${ROLE_TITLE[other]} top ${TOP_N} (${theirOther}/100). The draft email is for the role applied for, ${ROLE_TITLE[applied]}.` });
+    }
+    // Missed the invite list only on the tie-break.
+    if (applied === role && !top[role].has(c.id) && mine !== null && mine === cut[role]) {
+      flags.push({ type: 'tied_cutoff', detail: `Tied at ${mine}/100 with the #${TOP_N} ${ROLE_TITLE[role]} invite and left out only on the tie-break (less of the rubric backed by evidence, or a later upload). Review before sending the rejection.` });
     }
     return {
       id: c.id, rank: r?.rank ?? null, total: r?.total ?? null, scoredWeight: r?.scoredWeight ?? 0,
