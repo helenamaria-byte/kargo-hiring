@@ -104,3 +104,17 @@ test('injection: lines addressing the AI are flagged and stripped', () => {
   // Ordinary CV language must not trip it.
   assert.equal(detectInjection('Ignored no customs deadline in 4 years; followed instructions from CHAs').lines.length, 0);
 });
+
+test('PII: name taken from the file name when the CV has none, and still removed from the text', async () => {
+  const { nameFromFileName } = await import('../lib/pii.ts');
+  assert.equal(nameFromFileName('07_aditya_nair.pdf'), 'Aditya Nair');
+  assert.equal(nameFromFileName('spm_22_manish_agarwal.pdf'), 'Manish Agarwal');
+  assert.equal(nameFromFileName('scan0042.pdf'), null);
+  const cv = 'Product Manager | Bangalore\nnair.consulting@example.com | +91 90000 22233\nWorked with Aditya on carrier onboarding at a 3PL.';
+  const { pii, redacted, nameSource } = extractPII(cv, '07_aditya_nair.pdf');
+  assert.equal(pii.name, 'Aditya Nair');
+  assert.equal(nameSource, 'file');
+  assert.ok(!/aditya|nair/i.test(redacted), redacted);
+  assert.ok(redacted.startsWith('Product Manager'), 'header kept when the name came from the file');
+  assert.doesNotThrow(() => assertNoPII(redacted, pii));
+});

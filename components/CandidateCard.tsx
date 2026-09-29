@@ -165,6 +165,7 @@ function flagLabel(t: string) {
     strong_outsider: 'Strong outsider: review',
     duplicate: 'Duplicate',
     name_not_detected: 'Name not found',
+    name_from_file: 'Name from file name',
     email_not_detected: 'Email not found',
     other_role: 'Fits other role',
   } as Record<string, string>)[t] ?? t;

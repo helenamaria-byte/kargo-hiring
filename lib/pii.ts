@@ -6,7 +6,7 @@ export type PII = { name: string | null; email: string | null; phone: string | n
 const EMAIL_RE = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g;
 const PHONE_RE = /(?:\+?\d[\d\s().-]{7,}\d)/g;
 const PROFILE_URL_RE = /(?:https?:\/\/)?(?:www\.)?(?:linkedin\.com|github\.com|twitter\.com|x\.com|instagram\.com|facebook\.com)\/[^\s,;|)]*/gi;
-const NOT_A_NAME = /\b(resume|résumé|curriculum|vitae|cv|profile|summary|contact|objective|experience|education|skills|address|email|phone|mobile|product|manager|engineer|senior|operations|linkedin)\b/i;
+const NOT_A_NAME = /\b(university|college|institute|school|academy|iit|iim|imt|nit|bits|iiit|xlri|isb|resume|résumé|curriculum|vitae|cv|profile|summary|contact|objective|experience|education|skills|address|email|phone|mobile|product|manager|engineer|senior|operations|linkedin)\b/i;
 
 function isPhone(candidate: string): boolean {
   const digits = candidate.replace(/\D/g, '');
@@ -51,13 +51,28 @@ export function nameTokens(name: string | null): string[] {
   return name.split(/\s+/).map((t) => t.replace(/[.'’]/g, '')).filter((t) => t.length >= 2);
 }
 
-export function extractPII(raw: string): { pii: PII; redacted: string } {
+// "07_aditya_nair.pdf" / "pm_07_Aditya-Nair CV.docx" -> "Aditya Nair". Used only when the CV text has no name.
+export function nameFromFileName(fileName: string): string | null {
+  const words = fileName
+    .replace(/\.[a-z0-9]+$/i, '')
+    .split(/[\s_\-.]+/)
+    .filter((w) => w && !/^\d+$/.test(w) && !/^(s?pm|cv|resume|résumé|final|updated|new|copy|\(\d+\))$/i.test(w));
+  if (words.length < 2 || words.length > 4 || !words.every((w) => /^[A-Za-z'’]+$/.test(w))) return null;
+  return tidyName(words.join(' '));
+}
+
+export function extractPII(raw: string, fileName?: string): { pii: PII; redacted: string; nameSource: 'cv' | 'file' | null } {
   const text = raw.replace(/\r\n?/g, '\n');
   const emails = text.match(EMAIL_RE) ?? [];
   const phones = (text.match(PHONE_RE) ?? []).filter(isPhone);
   const email = emails[0] ?? null;
   const lines = text.split('\n').map((l) => l.trim()).filter(Boolean);
-  const name = findName(lines, email);
+  // Order of trust: a labelled "Name:" line, then a proper name in the file name (people name CV files
+  // after the candidate), then the first name-like line in the CV, then a guess from the email address.
+  const labelled = lines.slice(0, 15).map((l) => l.match(/^\s*(?:full\s+)?name\s*[:\-–]\s*(.+)$/i)?.[1]).find(Boolean);
+  const fromFile = !labelled && fileName ? nameFromFileName(fileName) : null;
+  const fromCv = labelled ? tidyName(labelled) : fromFile ? null : findName(lines, null);
+  const name = fromCv ?? fromFile ?? findName([], email);
 
   let redacted = text
     .replace(EMAIL_RE, '[email removed]')
@@ -73,7 +88,7 @@ export function extractPII(raw: string): { pii: PII; redacted: string } {
   }
   redacted = redacted.replace(/(\[name removed\]\s*){2,}/g, '[name removed] ').replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
 
-  return { pii: { name, email, phone: phones[0]?.trim() ?? null }, redacted };
+  return { pii: { name, email, phone: phones[0]?.trim() ?? null }, redacted, nameSource: fromCv ? 'cv' : fromFile ? 'file' : null };
 }
 
 // Last line of defence: called right before every AI request. Throws rather than leak.

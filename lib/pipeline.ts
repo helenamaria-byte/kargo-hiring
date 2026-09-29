@@ -28,9 +28,10 @@ export async function ingest(file: File, role: Role) {
   );
   try {
     const text = await fileToText(file.name, await file.arrayBuffer());
-    const { pii, redacted } = extractPII(text);
+    const { pii, redacted, nameSource } = extractPII(text, file.name);
     const flags: Flag[] = [];
     if (!pii.name) flags.push({ type: 'name_not_detected', detail: 'Could not find the candidate’s name in the CV — add it on the card before sending.' });
+    if (nameSource === 'file') flags.push({ type: 'name_from_file', detail: `Name taken from the file name (“${file.name}”) because the CV text has none — check it before sending.` });
     if (!pii.email) flags.push({ type: 'email_not_detected', detail: 'No email address found in the CV — add it on the card before sending.' });
     const hash = contentHash(redacted);
 
