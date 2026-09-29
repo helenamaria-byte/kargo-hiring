@@ -12,8 +12,9 @@ Upload CVs → personal details stripped in code → Gemini scores every CV on b
 
 ## Sending
 
-- **No Resend domain (current):** Confirm & Send opens the email in Arjun's Gmail with the real first name filled in. He presses Send in Gmail, then clicks **I sent it: mark as sent** on the card.
-- **With a verified Resend domain:** set `RESEND_FROM` (and optionally `RESEND_REPLY_TO`) in Vercel and redeploy; the same button then sends directly via Resend.
+- **Current (test mode):** `RESEND_FROM=Kargo Hiring <onboarding@resend.dev>` and `EMAIL_TO_OVERRIDE=helena_maria@pg27.mesaschool.co`. Confirm & Send sends directly via Resend, but every email goes to that inbox, subject-prefixed "[TEST for Name]" with the real recipient noted at the top. Without a verified domain, Resend only delivers to the Resend account's own address.
+- **Real sending:** verify a domain in Resend, set `RESEND_FROM` to an address on it, clear `EMAIL_TO_OVERRIDE`, redeploy (`npm run update:keys`).
+- **No Resend at all:** leave `RESEND_FROM` empty and the button opens a ready email in Gmail instead.
 
 ## Where the rules live
 
