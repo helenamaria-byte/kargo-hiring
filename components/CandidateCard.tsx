@@ -17,7 +17,7 @@ async function call(url: string, method: string, body?: unknown) {
   return j;
 }
 
-export function CandidateCard({ c, role, mode, open }: { c: CardData; role: Role; mode: EmailMode; open: boolean }) {
+export function CandidateCard({ c, role, mode, open, testTo }: { c: CardData; role: Role; mode: EmailMode; open: boolean; testTo: string | null }) {
   const router = useRouter();
   const [name, setName] = useState(c.name ?? '');
   const [email, setEmail] = useState(c.email ?? '');
@@ -106,7 +106,7 @@ export function CandidateCard({ c, role, mode, open }: { c: CardData; role: Role
 
         {c.draft && (
           <div className="box" style={{ background: '#fff', border: '1px solid var(--line)' }}>
-            <h3>Draft email: {c.draft.type === 'invite' ? 'interview invite' : 'rejection'} for {c.roleApplied} · to {email || '(no email)'}</h3>
+            <h3>Draft email: {c.draft.type === 'invite' ? 'interview invite' : 'rejection'} for {c.roleApplied} · to {testTo && mode === 'resend' ? `${testTo} (test mode; really for ${email || 'no email'})` : email || '(no email)'}</h3>
             <input value={subject} onChange={(e) => setSubject(e.target.value)} disabled={!!sentAt} style={{ marginBottom: 6 }} />
             <textarea value={body} onChange={(e) => setBody(e.target.value)} disabled={!!sentAt} />
             <div className="muted" style={{ fontSize: 12 }}>{'{{first_name}}'} is replaced with “{name.split(/\s+/)[0] || '?'}” only when you send.</div>
@@ -118,12 +118,12 @@ export function CandidateCard({ c, role, mode, open }: { c: CardData; role: Role
                   <button disabled={busy || !draftDirty} onClick={() => run(async () => { await call(`/api/drafts/${c.id}`, 'PATCH', { subject, body }); return 'Draft saved'; })}>Save edits</button>
                   <button
                     className="primary"
-                    disabled={busy || !email || contactDirty || (/\{\{\s*first_name\s*\}\}/.test(subject + body) && !first)}
+                    disabled={busy || (!email && !(testTo && mode === 'resend')) || contactDirty || (/\{\{\s*first_name\s*\}\}/.test(subject + body) && !first)}
                     title={contactDirty ? 'Save the contact details first' : ''}
                     onClick={() => {
                       if (mode === 'resend') {
-                        if (!confirm(`Send this ${c.draft!.type === 'invite' ? 'invite' : 'rejection'} to ${name || '(no name)'} <${email}> now?`)) return;
-                        run(async () => { const j = await call(`/api/send/${c.id}`, 'POST', { subject, body }); setSentAt(j.sentAt); return 'Sent'; });
+                        if (!confirm(testTo ? `TEST MODE: send this ${c.draft!.type === 'invite' ? 'invite' : 'rejection'} for ${name || '(no name)'} to ${testTo} now?` : `Send this ${c.draft!.type === 'invite' ? 'invite' : 'rejection'} to ${name || '(no name)'} <${email}> now?`)) return;
+                        run(async () => { const j = await call(`/api/send/${c.id}`, 'POST', { subject, body }); setSentAt(j.sentAt); return `Sent to ${j.to}`; });
                         return;
                       }
                       // Gmail mode: the real name is merged now, at send time, and the email opens in Arjun's Gmail.
@@ -144,7 +144,7 @@ export function CandidateCard({ c, role, mode, open }: { c: CardData; role: Role
                       or use your mail app
                     </a>
                   )}
-                  {!email && <span className="err">Add an email address first.</span>}
+                  {!email && !(testTo && mode === 'resend') && <span className="err">Add an email address first.</span>}
                   {email && !first && /\{\{\s*first_name\s*\}\}/.test(subject + body) && <span className="err">Add the candidate&apos;s name first.</span>}
                   {contactDirty && <span className="flag">Save the contact details before sending.</span>}
                 </>

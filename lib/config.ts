@@ -17,3 +17,7 @@ export const emailConfigured = () => Boolean(process.env.RESEND_API_KEY && proce
 // Arjun's Gmail instead; he presses Send there and marks the card as sent.
 export type EmailMode = 'resend' | 'gmail';
 export const emailMode = (): EmailMode => (emailConfigured() ? 'resend' : 'gmail');
+
+// Test mode: when set, every email goes to this one address instead of the candidate, with the
+// intended recipient noted at the top. Leave empty to email candidates for real.
+export const emailOverride = (): string | null => process.env.EMAIL_TO_OVERRIDE?.trim() || null;

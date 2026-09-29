@@ -1,4 +1,4 @@
-import { emailConfigured } from '@/lib/config';
+import { emailConfigured, emailOverride } from '@/lib/config';
 import { firstName } from '@/lib/pii';
 import { db, q } from '@/lib/supabase';
 
@@ -19,7 +19,8 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
   );
   if (!c) return Response.json({ error: 'Candidate not found' }, { status: 404 });
   if (c.sent_at) return Response.json({ error: `Already sent at ${c.sent_at}` }, { status: 409 });
-  if (!c.email) return Response.json({ error: 'No email address — add one on the card first' }, { status: 400 });
+  const override = manual ? null : emailOverride();
+  if (!c.email && !override) return Response.json({ error: 'No email address — add one on the card first' }, { status: 400 });
   const first = firstName(c.name);
   if (!first && /\{\{\s*first_name\s*\}\}/.test(subject + body)) {
     return Response.json({ error: 'No name on file to fill {{first_name}} — add the name on the card first' }, { status: 400 });
@@ -27,7 +28,12 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
 
   // The real name is merged here, at send time, and nowhere earlier.
   const merge = (s: string) => s.replace(/\{\{\s*first_name\s*\}\}/g, first ?? '');
-  const text = merge(body);
+  // Test mode: deliver to the one test inbox, and say at the top who it was really for.
+  const text = override ? `[TEST MODE: this email is for ${c.name ?? 'the candidate'} <${c.email ?? 'no email on file'}>]
+
+${merge(body)}` : merge(body);
+  const to = override ?? c.email!;
+  const finalSubject = override ? `[TEST for ${c.name ?? 'candidate'}] ${merge(subject)}` : merge(subject);
 
   // Save exactly what is being sent, then claim the send atomically so a double click can't send twice.
   await q(db().from('drafts').update({ email_subject: subject, email_body: body, updated_at: new Date().toISOString() }).eq('candidate_id', id));
@@ -43,8 +49,8 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
     headers: { Authorization: `Bearer ${process.env.RESEND_API_KEY}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({
       from: process.env.RESEND_FROM,
-      to: [c.email],
-      subject: merge(subject),
+      to: [to],
+      subject: finalSubject,
       text,
       ...(process.env.RESEND_REPLY_TO ? { reply_to: process.env.RESEND_REPLY_TO } : {}),
     }),
@@ -54,5 +60,5 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
     await db().from('candidates').update({ sent_at: null, status: 'ready' }).eq('id', id);
     return Response.json({ error: `Resend rejected the email (${res.status}): ${detail}` }, { status: 502 });
   }
-  return Response.json({ ok: true, sentAt });
+  return Response.json({ ok: true, sentAt, to });
 }
