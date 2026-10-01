@@ -22,6 +22,9 @@ const FLAG_LABEL: Record<string, string> = {
   thin_evidence: 'Thin evidence', tied_cutoff: 'Tied at cut-off', other_role: 'Fits other role', duplicate: 'Duplicate',
   name_not_detected: 'Name not found', email_not_detected: 'Email not found', name_from_file: 'Name from file name', role_assigned: 'Role assigned by score',
 };
+// Flag details sometimes start with their own label ("Scores inconsistent: …"); don't show it twice.
+const stripLabel = (detail: string, label?: string) =>
+  label && detail.toLowerCase().startsWith(label.toLowerCase()) ? detail.slice(label.length).replace(/^\s*(—\s*review\s*)?[:—–-]?\s*/i, '') : detail;
 const fmt = (iso: string) => new Date(iso).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
 const firstName = (n: string) => n.trim().split(/\s+/)[0] ?? '';
 const merge = (t: string, name: string) => t.replace(/\{\{\s*first_name\s*\}\}/g, firstName(name));
@@ -167,7 +170,7 @@ function Panel({ r, mode, testTo, patch, draft: ext, setDraft: setExt, hideSend 
       {(real.length > 0 || info.length > 0 || r.errorMessage) && (
         <div className="block flags">
           {r.errorMessage && <div className="flag">{r.errorMessage}</div>}
-          {real.map((f, i) => <div key={i} className="flag"><b>{FLAG_LABEL[f.type] ?? f.type}.</b> {f.detail}</div>)}
+          {real.map((f, i) => <div key={i} className="flag"><b>{FLAG_LABEL[f.type] ?? f.type}.</b> {stripLabel(f.detail, FLAG_LABEL[f.type])}</div>)}
           {info.map((f, i) => <div key={`i${i}`} className="flag info">{f.detail}</div>)}
         </div>
       )}
