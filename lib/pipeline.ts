@@ -9,7 +9,8 @@ import {
   type Criterion, type DraftResult, type ScoreLine, type ScoringResult,
 } from './prompts';
 import { loadRubric } from './rubric';
-import { isStrongOutsider, rank, TOP_N, weightedTotal, type Role } from './scoring';
+import { formatSegments, hasNumber, locate, segmentCv, type Segment } from './evidence';
+import { isStrongOutsider, rank, reconcile, SHORTLIST_MIN, THIN_EVIDENCE_PCT, TOP_N, weightedTotal, type Role } from './scoring';
 import { db, q } from './supabase';
 
 export type Flag = { type: string; detail: string };
@@ -19,7 +20,7 @@ type CandidateRow = {
 };
 
 // Flags produced by scoring; everything else (name/email/duplicate) survives a rescore.
-const SCORING_FLAGS = ['prompt_injection', 'strong_outsider'];
+const SCORING_FLAGS = ['prompt_injection', 'strong_outsider', 'scores_inconsistent', 'thin_evidence'];
 
 // ── 1. Ingest one file: parse → strip PII → dedupe → score ─────────────
 export async function ingest(file: File, role: Role) {
@@ -62,7 +63,54 @@ export async function ingest(file: File, role: Role) {
 }
 
 // ── 2. Score one stored candidate against both rubrics ─────────────────
-const norm = (s: string) => s.toLowerCase().replace(/[“”"‘’'`]/g, '').replace(/[^a-z0-9%+]+/g, ' ').trim();
+// Strict scoring. The model is told the rules; the code then enforces them on every answer:
+//  - evidence must be a work-history line (summary/profile lines never count)
+//  - a 4 or 5 needs a number in the evidence, else it is capped at 3
+//  - one CV line can back only one criterion
+//  - each role is scored twice at temperature 0; the lower score is kept, and a gap of more than 1
+//    (or evidence found in only one run) flags the candidate "scores inconsistent"
+type Judged = { score: number | null; evidence: string | null; verified: boolean | null; lineId: number | null; reason: string; probe: string | null };
+
+function judgeRun(out: ScoringResult, criteria: Criterion[], segs: Segment[]): Map<number, Judged> {
+  const res = new Map<number, Judged>();
+  for (const cr of criteria) {
+    const r = out.criteria?.find((x) => x.criterion_id === cr.id);
+    let s = r && Number.isInteger(r.score) && r.score! >= 1 && r.score! <= 5 ? r.score : null;
+    const quote = r?.evidence_quote?.trim() || '';
+    let reason = r?.reason?.trim() || (r ? '' : 'The model returned no assessment for this criterion.');
+    let probe = r?.probe_question?.trim() || null;
+    const seg = quote ? locate(segs, r?.evidence_line, quote) : null;
+    if (s !== null && !quote) s = null; // evidence or no score
+    if (s !== null && (r?.evidence_source !== 'work_history' || seg?.section === 'summary')) {
+      s = null; // only work history counts
+      reason = 'Only a summary or profile claim supports this; no work-history bullet does.';
+      probe = probe || `Which job shows this in practice: ${cr.name.toLowerCase()}? Ask for a specific example.`;
+    }
+    if (s !== null && s >= 4 && !hasNumber(quote)) {
+      s = 3; // 4 or 5 needs a number
+      reason = `Capped at 3: the evidence has no volume, timeframe or adoption number. ${reason}`.trim();
+    }
+    res.set(cr.id, { score: s, evidence: s === null ? null : quote, verified: s === null ? null : Boolean(seg), lineId: seg?.id ?? null, reason, probe });
+  }
+  // One line, one criterion: keep it for the criterion it adds most to (score × weight), drop it elsewhere.
+  const byLine = new Map<number, number[]>();
+  for (const [cid, j] of res) if (j.score !== null && j.lineId !== null) byLine.set(j.lineId, [...(byLine.get(j.lineId) ?? []), cid]);
+  for (const cids of byLine.values()) {
+    if (cids.length < 2) continue;
+    const w = (cid: number) => (res.get(cid)!.score ?? 0) * (criteria.find((c) => c.id === cid)?.weight ?? 0);
+    const [keep, ...drop] = [...cids].sort((a, b) => w(b) - w(a));
+    const keptName = criteria.find((c) => c.id === keep)?.name ?? 'another criterion';
+    for (const cid of drop) {
+      const cr = criteria.find((c) => c.id === cid)!;
+      res.set(cid, {
+        score: null, evidence: null, verified: null, lineId: null,
+        reason: `The only evidence was the same CV line already used for “${keptName}”.`,
+        probe: `Ask for a separate example of: ${cr.name.toLowerCase()}.`,
+      });
+    }
+  }
+  return res;
+}
 
 export async function score(id: number) {
   const [c] = await q<CandidateRow[]>(db().from('candidates').select('*').eq('id', id));
@@ -70,43 +118,53 @@ export async function score(id: number) {
   const pii: PII = { name: c.name, email: c.email, phone: c.phone };
   const rubric = await loadRubric();
   const { lines: codeInjections, cleaned } = detectInjection(c.cv_content);
+  const segs = segmentCv(cleaned);
+  const prompt = scoringPrompt(formatSegments(segs));
 
+  // Two independent runs per role, all four requests at once.
   const results = await Promise.all(
     ROLES.map(async (role) => {
       const criteria = rubric.filter((r) => r.role === role);
-      const out = await generateJSON<ScoringResult>({ system: scoringSystem(role, criteria), prompt: scoringPrompt(cleaned), schema: scoringSchema, pii });
-      return { role, criteria, out };
+      const call = () => generateJSON<ScoringResult>({ system: scoringSystem(role, criteria), prompt, schema: scoringSchema, pii, temperature: 0 });
+      const runs = await Promise.all([call(), call()]);
+      return { role, criteria, runs };
     }),
   );
 
-  const cvNorm = norm(c.cv_content);
   const scoreRows: Record<string, unknown>[] = [];
   const totals: Record<string, unknown>[] = [];
   const flags: Flag[] = (c.flags ?? []).filter((f) => !SCORING_FLAGS.includes(f.type));
   const aiInjections = new Set<string>();
+  const inconsistent: string[] = [];
 
-  for (const { role, criteria, out } of results) {
-    // Skip our own placeholder, which the model sometimes reports back.
-    out.addressed_to_ai?.forEach((t) => t?.trim() && !/^\[?text addressed to the screening system removed\]?$/i.test(t.trim()) && aiInjections.add(t.trim().slice(0, 200)));
-    const items = criteria.map((cr: Criterion) => {
-      const r = out.criteria?.find((x) => x.criterion_id === cr.id);
-      let s = r && Number.isInteger(r.score) && r.score! >= 1 && r.score! <= 5 ? r.score : null;
-      const evidence = r?.evidence_quote?.trim() || null;
-      if (s !== null && !evidence) s = null; // rule 1: evidence or no score
-      const probe = s === null ? r?.probe_question?.trim() || `Ask for a concrete example of: ${cr.name.toLowerCase()}.` : null;
+  for (const { role, criteria, runs } of results) {
+    for (const out of runs) {
+      // Skip our own placeholder, which the model sometimes reports back.
+      out.addressed_to_ai?.forEach((t) => t?.trim() && !/^\[?text addressed to the screening system removed\]?$/i.test(t.trim()) && aiInjections.add(t.trim().slice(0, 200)));
+    }
+    const [a, b] = runs.map((out) => judgeRun(out, criteria, segs));
+    const items = criteria.map((cr) => {
+      const x = a.get(cr.id)!, y = b.get(cr.id)!;
+      const r = reconcile(x.score, y.score);
+      const chosen = r.score === null ? (x.score === null ? x : y) : r.from === 0 ? x : y;
+      if (r.inconsistent) inconsistent.push(`${role} “${cr.name}” (${x.score ?? '—'} vs ${y.score ?? '—'})`);
+      const probe = r.score === null ? (chosen.probe || x.probe || y.probe || `Ask for a concrete example of: ${cr.name.toLowerCase()}.`) : null;
       scoreRows.push({
-        candidate_id: id, criterion_id: cr.id, role, score: s,
-        evidence: s === null ? null : evidence,
-        quote_verified: s === null ? null : cvNorm.includes(norm(evidence!)),
-        reason: r?.reason?.trim() || (r ? '' : 'The model returned no assessment for this criterion.'),
+        candidate_id: id, criterion_id: cr.id, role, score: r.score,
+        evidence: r.score === null ? null : chosen.evidence,
+        quote_verified: r.score === null ? null : chosen.verified,
+        reason: r.inconsistent && r.score === null ? `The two scoring runs disagreed on whether there is evidence (${x.score ?? 'none'} vs ${y.score ?? 'none'}).` : chosen.reason,
         probe_question: probe,
       });
-      return { name: cr.name, weight: cr.weight, score: s };
+      return { name: cr.name, weight: cr.weight, score: r.score };
     });
     const { total, scoredWeight } = weightedTotal(items);
     totals.push({ candidate_id: id, role, weighted_total: total, scored_weight: scoredWeight });
     if (isStrongOutsider(items)) {
       flags.push({ type: 'strong_outsider', detail: `Strong outsider — review (${role}): 4+ on every criterion except “Did the operations work themselves”.` });
+    }
+    if (total !== null && scoredWeight < THIN_EVIDENCE_PCT) {
+      flags.push({ type: 'thin_evidence', detail: `${role} score rests on only ${scoredWeight}% of the rubric weight; the rest had no work-history evidence.` });
     }
   }
 
@@ -114,44 +172,76 @@ export async function score(id: number) {
   if (injections.length) {
     flags.push({ type: 'prompt_injection', detail: `CV contains text addressed to the AI (ignored for scoring): ${injections.map((t) => `“${t}”`).join('; ')}` });
   }
+  if (inconsistent.length) {
+    flags.push({ type: 'scores_inconsistent', detail: `Scores inconsistent: the two scoring runs differed by more than 1 (lower score kept) on ${inconsistent.join('; ')}.` });
+  }
 
   await q(db().from('scores').delete().eq('candidate_id', id));
   await q(db().from('scores').insert(scoreRows));
   await q(db().from('score_totals').upsert(totals));
-  await q(db().from('candidates').update({ flags, status: 'processing', error_message: null }).eq('id', id));
+  // A candidate who was already emailed stays "sent".
+  await q(db().from('candidates').update({ flags, error_message: null, ...(c.sent_at ? {} : { status: 'processing' }) }).eq('id', id));
 }
 
 // ── 3. Briefs + email drafts, driven by the code's ranking ─────────────
-type Draft = { candidate_id: number; brief_pm: string | null; brief_spm: string | null; email_type: string | null; email_body: string | null };
+type Draft = { candidate_id: number; brief_pm: string | null; brief_spm: string | null; email_type: string | null; email_body: string | null; edited: boolean };
+export type RankedRow = { id: number; total: number | null; scoredWeight: number; ops: number | null; rank: number };
 
+// Each role is ranked among the people who applied for it. Invites go to the top 5 of those, and only
+// to candidates at or above SHORTLIST_MIN. Ties are broken by the operations score.
 export async function rankings() {
   const cands = await q<CandidateRow[]>(
     db().from('candidates').select('id, role_applied, status, duplicate_of, sent_at, cv_content, name, email, phone, flags, file_name').is('duplicate_of', null).neq('status', 'error'),
   );
-  const totals = await q<{ candidate_id: number; role: Role; weighted_total: number | null; scored_weight: number }[]>(
-    db().from('score_totals').select('*'),
-  );
+  const totals = await q<{ candidate_id: number; role: Role; weighted_total: number | null; scored_weight: number }[]>(db().from('score_totals').select('*'));
+  const rubric = await loadRubric();
+  const opsIds = rubric.filter((r) => /did the operations work themselves/i.test(r.name)).map((r) => r.id);
+  const opsScores = await q<{ candidate_id: number; role: Role; score: number | null }[]>(db().from('scores').select('candidate_id, role, score').in('criterion_id', opsIds));
   const scored = new Set(totals.map((t) => t.candidate_id));
   const eligible = cands.filter((c) => scored.has(c.id));
-  // Each role's top 5 is drawn from the people who applied for that role, so every role gets 5 invites.
-  // Everyone is still ranked on both tabs; a strong fit for the other role is flagged on the card.
+
   const top: Record<Role, Set<number>> = { PM: new Set(), SPM: new Set() };
   const cut: Record<Role, number | null> = { PM: null, SPM: null };
+  const ranked: Record<Role, RankedRow[]> = { PM: [], SPM: [] };
   for (const role of ROLES) {
     const rows = eligible.filter((c) => c.role_applied === role).map((c) => {
       const t = totals.find((x) => x.candidate_id === c.id && x.role === role);
-      return { id: c.id, total: t?.weighted_total == null ? null : Number(t.weighted_total), scoredWeight: t?.scored_weight ?? 0 };
+      const ops = opsScores.find((x) => x.candidate_id === c.id && x.role === role)?.score ?? null;
+      return { id: c.id, total: t?.weighted_total == null ? null : Number(t.weighted_total), scoredWeight: t?.scored_weight ?? 0, ops };
     });
-    const ranked = rank(rows).filter((r) => r.total !== null);
-    ranked.slice(0, TOP_N).forEach((r) => top[role].add(r.id));
-    cut[role] = ranked[TOP_N - 1]?.total ?? null;
+    ranked[role] = rank(rows);
+    const withTotal = ranked[role].filter((r) => r.total !== null);
+    withTotal.slice(0, TOP_N).filter((r) => r.total! >= SHORTLIST_MIN).forEach((r) => top[role].add(r.id));
+    cut[role] = withTotal[TOP_N - 1]?.total ?? null;
   }
-  return { eligible, top, cut };
+  return { eligible, top, cut, ranked };
+}
+
+async function scoreLines(id: number) {
+  const lines = await q<{ role: Role; score: number | null; reason: string; evidence: string | null; rubric_criteria: { name: string; weight: number; position: number } }[]>(
+    db().from('scores').select('role, score, reason, evidence, rubric_criteria(name, weight, position)').eq('candidate_id', id),
+  );
+  return Object.fromEntries(
+    ROLES.map((r) => [r, lines.filter((l) => l.role === r).sort((a, b) => a.rubric_criteria.position - b.rubric_criteria.position)
+      .map<ScoreLine>((l) => ({ name: l.rubric_criteria.name, weight: l.rubric_criteria.weight, score: l.score, reason: l.reason, evidence: l.evidence }))]),
+  ) as Record<Role, ScoreLine[]>;
+}
+
+async function writeDraft(c: CandidateRow, emailType: 'invite' | 'rejection', briefRoles: Role[]) {
+  const pii: PII = { name: c.name, email: c.email, phone: c.phone };
+  const out = await generateJSON<DraftResult>({
+    system: draftSystem(),
+    prompt: draftPrompt({ cv: detectInjection(c.cv_content ?? '').cleaned, roleApplied: c.role_applied, emailType, briefRoles, scores: await scoreLines(c.id) }),
+    schema: draftSchema,
+    pii,
+  });
+  const body = out.email_body.replace(/\[(name|email|phone|header|link|profile link) removed\]/gi, '').replace(/[ \t]{2,}/g, ' ');
+  return { out, email: { email_type: emailType, email_subject: emailSubject(emailType, c.role_applied), email_body: wrapEmail(body) } };
 }
 
 export async function generateDrafts(limit = 3) {
   const { eligible, top } = await rankings();
-  const drafts = await q<Draft[]>(db().from('drafts').select('candidate_id, brief_pm, brief_spm, email_type, email_body'));
+  const drafts = await q<Draft[]>(db().from('drafts').select('candidate_id, brief_pm, brief_spm, email_type, email_body, edited'));
   const byId = new Map(drafts.map((d) => [d.candidate_id, d]));
   const briefKey = (r: Role): 'brief_pm' | 'brief_spm' => (r === 'PM' ? 'brief_pm' : 'brief_spm');
 
@@ -160,14 +250,13 @@ export async function generateDrafts(limit = 3) {
     if (c.sent_at || c.status === 'sent') continue;
     const d = byId.get(c.id);
     const emailType = top[c.role_applied].has(c.id) ? 'invite' : 'rejection';
-    const needEmail = !d?.email_body || d.email_type !== emailType;
+    // An email Arjun edited or chose himself is never overwritten.
+    const needEmail = !d?.email_body || (!d.edited && d.email_type !== emailType);
     const needBriefs = ROLES.filter((r) => top[r].has(c.id) && !d?.[briefKey(r)]);
     const stale = ROLES.filter((r) => !top[r].has(c.id) && d?.[briefKey(r)]);
+    if (stale.length) await q(db().from('drafts').update(Object.fromEntries(stale.map((r) => [briefKey(r), null]))).eq('candidate_id', c.id));
     if (needEmail || needBriefs.length) work.push({ c, emailType, needEmail, needBriefs });
-    else {
-      if (stale.length) await q(db().from('drafts').update(Object.fromEntries(stale.map((r) => [briefKey(r), null]))).eq('candidate_id', c.id));
-      if (c.status !== 'ready') await q(db().from('candidates').update({ status: 'ready' }).eq('id', c.id));
-    }
+    else if (c.status !== 'ready') await q(db().from('candidates').update({ status: 'ready' }).eq('id', c.id));
   }
 
   const batch = work.slice(0, limit);
@@ -175,20 +264,7 @@ export async function generateDrafts(limit = 3) {
   await Promise.all(
     batch.map(async ({ c, emailType, needEmail, needBriefs }) => {
       try {
-        const lines = await q<{ role: Role; score: number | null; reason: string; evidence: string | null; rubric_criteria: { name: string; weight: number; position: number } }[]>(
-          db().from('scores').select('role, score, reason, evidence, rubric_criteria(name, weight, position)').eq('candidate_id', c.id),
-        );
-        const scores = Object.fromEntries(
-          ROLES.map((r) => [r, lines.filter((l) => l.role === r).sort((a, b) => a.rubric_criteria.position - b.rubric_criteria.position)
-            .map<ScoreLine>((l) => ({ name: l.rubric_criteria.name, weight: l.rubric_criteria.weight, score: l.score, reason: l.reason, evidence: l.evidence }))]),
-        ) as Record<Role, ScoreLine[]>;
-        const pii: PII = { name: c.name, email: c.email, phone: c.phone };
-        const out = await generateJSON<DraftResult>({
-          system: draftSystem(),
-          prompt: draftPrompt({ cv: detectInjection(c.cv_content ?? '').cleaned, roleApplied: c.role_applied, emailType, briefRoles: needBriefs, scores }),
-          schema: draftSchema,
-          pii,
-        });
+        const { out, email } = await writeDraft(c, emailType, needBriefs);
         const d = byId.get(c.id);
         const row: Record<string, unknown> = {
           candidate_id: c.id,
@@ -196,10 +272,7 @@ export async function generateDrafts(limit = 3) {
           brief_spm: top.SPM.has(c.id) ? (needBriefs.includes('SPM') ? out.brief_spm?.trim() || null : d?.brief_spm) : null,
           updated_at: new Date().toISOString(),
         };
-        if (needEmail) {
-          const body = out.email_body.replace(/\[(name|email|phone|header|profile link) removed\]/gi, '').replace(/[ \t]{2,}/g, ' ');
-          Object.assign(row, { email_type: emailType, email_subject: emailSubject(emailType, c.role_applied), email_body: wrapEmail(body), edited: false });
-        }
+        if (needEmail) Object.assign(row, email, { edited: false });
         await q(db().from('drafts').upsert(row));
         await q(db().from('candidates').update({ status: 'ready' }).eq('id', c.id));
       } catch (e) {
@@ -210,4 +283,12 @@ export async function generateDrafts(limit = 3) {
   return { processed: batch.length - errors.length, remaining: work.length - batch.length + errors.length, errors };
 }
 
-export const roleTitle = (r: Role) => ROLE_TITLE[r];
+// Review mode: Arjun chose to send the other kind of email. Write it now; nothing is sent here.
+export async function draftEmailOfType(id: number, emailType: 'invite' | 'rejection') {
+  const [c] = await q<CandidateRow[]>(db().from('candidates').select('*').eq('id', id));
+  if (!c) throw new Error('Candidate not found');
+  if (c.sent_at) throw new Error('Already sent');
+  const { email } = await writeDraft(c, emailType, []);
+  await q(db().from('drafts').upsert({ candidate_id: id, ...email, edited: true, updated_at: new Date().toISOString() }));
+  return email;
+}

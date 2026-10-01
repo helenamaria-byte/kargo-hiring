@@ -126,3 +126,44 @@ test('PII: a phone number repeated back to back, or written without the country 
   assert.doesNotThrow(() => assertNoPII(redacted, pii));
   assert.throws(() => assertNoPII('reach me on 9901428453', pii), /phone/);
 });
+
+test('PII: name printed twice and glued at the END of the text is found in the CV, not the file name', () => {
+  const cv = 'Strategy & Operations Leader | Corporate Strategy\nEXPERIENCE\nRan carrier onboarding for 40 shippers.\n+91 98210 64037 98210 64037ravi-kumar-pm https://pranavjoshi.vercel.app/\nROHAN MEHTARohan Mehta\nREDDYsquad_5@pg27.example.co';
+  const { pii, redacted, nameSource } = extractPII(cv, '01_some_file.pdf');
+  assert.equal(pii.name, 'Rohan Mehta');
+  assert.equal(nameSource, 'cv');
+  assert.equal(pii.email, 'squad_5@pg27.example.co');
+  assert.ok(!/rohan|mehta|98210|64037|pranav|vercel/i.test(redacted), redacted);
+  assert.ok(redacted.includes('Corporate Strategy'), 'job-title header is not mistaken for the name');
+});
+
+test('PII guard catches a name joined into one word', () => {
+  assert.throws(() => assertNoPII('see pranavjoshi portfolio', { name: 'Pranav Joshi', email: null, phone: null }), /joined/);
+});
+
+test('ranking: ties go to the higher operations score', async () => {
+  const r = rank([
+    { id: 1, total: 76, scoredWeight: 100, ops: 3 }, { id: 2, total: 76, scoredWeight: 100, ops: 5 }, { id: 3, total: 80, scoredWeight: 100, ops: 1 },
+  ]);
+  assert.deepEqual(r.map((x) => x.id), [3, 2, 1]);
+});
+
+test('two runs: lower score wins; gap >1 or evidence in only one run is inconsistent', async () => {
+  const { reconcile } = await import('../lib/scoring.ts');
+  assert.deepEqual(reconcile(4, 4), { score: 4, from: 0, inconsistent: false });
+  assert.deepEqual(reconcile(4, 3), { score: 3, from: 1, inconsistent: false });
+  assert.deepEqual(reconcile(5, 2), { score: 2, from: 1, inconsistent: true });
+  assert.equal(reconcile(null, 3).inconsistent, true);
+  assert.equal(reconcile(null, 3).score, null);
+});
+
+test('evidence: CV split into numbered lines with sections; quotes located; numbers detected', async () => {
+  const { segmentCv, locate, hasNumber } = await import('../lib/evidence.ts');
+  const segs = segmentCv('PROFESSIONAL SUMMARY\nOperations-minded PM who loves users.\nEXPERIENCE\nOps Executive, a CHA firm\n• Handled 180+ shipments a month\nand cleared customs holds.\nEDUCATION\nMBA');
+  assert.deepEqual(segs.map((s) => s.section), ['summary', 'experience', 'experience', 'other']);
+  assert.ok(segs[2].text.includes('and cleared customs holds'), 'wrapped bullet joined');
+  assert.equal(locate(segs, 99, 'Handled 180+ shipments a month')?.id, 3);
+  assert.equal(hasNumber('adopted by 3 hubs'), true);
+  assert.equal(hasNumber('adopted by two other teams'), true);
+  assert.equal(hasNumber('improved the process significantly'), false);
+});

@@ -1,51 +1,44 @@
-import { CandidateCard } from '@/components/CandidateCard';
-import { DraftsButton } from '@/components/DraftsButton';
+import Link from 'next/link';
 import { Nav } from '@/components/Nav';
-import { emailMode, emailOverride, ROLE_TITLE } from '@/lib/config';
-import { loadDashboard } from '@/lib/dashboard';
-import type { Role } from '@/lib/scoring';
+import { loadStats } from '@/lib/review';
 
 export const dynamic = 'force-dynamic';
 
-export default async function Dashboard({ searchParams }: { searchParams: Promise<{ role?: string }> }) {
-  const role: Role = (await searchParams).role === 'SPM' ? 'SPM' : 'PM';
-  let data: Awaited<ReturnType<typeof loadDashboard>>;
-  try {
-    data = await loadDashboard(role);
-  } catch (e) {
-    return (
-      <>
-        <Nav on={role} />
-        <main><p className="err">Could not load the dashboard: {e instanceof Error ? e.message : String(e)}</p></main>
-      </>
-    );
-  }
-  const { rankedCards, unranked, pendingDrafts, inProgress, counts } = data;
-  const mode = emailMode();
-  const testTo = emailOverride();
+export default async function Welcome() {
+  let stats: Awaited<ReturnType<typeof loadStats>> | null = null;
+  let error: string | null = null;
+  try { stats = await loadStats(); } catch (e) { error = e instanceof Error ? e.message : String(e); }
 
   return (
     <>
-      <Nav on={role} />
-      <main>
-        <h1>{ROLE_TITLE[role]}: {rankedCards.length} ranked by {role} score</h1>
-        <div className="bar muted">
-          <span>Applied: {counts.PM ?? 0} PM · {counts.SPM ?? 0} SPM. Everyone is scored on both rubrics.</span>
-          {inProgress > 0 && <span className="flag">{inProgress} still processing</span>}
-          <DraftsButton pending={pendingDrafts} />
-          {mode === 'resend' && testTo && <span className="pill warn">Test mode: every email is sent to {testTo}, not to candidates</span>}
-          {mode === 'gmail' && <span className="pill">Sending via Arjun&apos;s Gmail: the button opens a ready email, you press Send in Gmail</span>}
+      <Nav on="home" />
+      <main className="page">
+        <section className="hero">
+          <h1>CV decisions, made simple</h1>
+          {stats ? (
+            <p className="stats">
+              <b>{stats.reviewed}</b> candidates reviewed · <b>{stats.invitesReady}</b> invites ready · <b>{stats.sent}</b> emails sent
+            </p>
+          ) : (
+            <p className="note err">Could not load stats: {error}</p>
+          )}
+        </section>
+        <div className="choices">
+          <Link href="/review" className="choice">
+            <span className="icon" aria-hidden>
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M4 6h16M4 12h10M4 18h7" /></svg>
+            </span>
+            <div className="t">Review candidates</div>
+            <div className="muted">Ranked shortlists for PM and SPM, with briefs, evidence and draft emails.</div>
+          </Link>
+          <Link href="/upload" className="choice">
+            <span className="icon" aria-hidden>
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M12 16V4M7 9l5-5 5 5M5 20h14" /></svg>
+            </span>
+            <div className="t">Upload new CVs</div>
+            <div className="muted">Drop in PDFs or Word files. Each one is scored on both rubrics.</div>
+          </Link>
         </div>
-        {rankedCards.length === 0 && unranked.length === 0 && <p>No candidates yet. <a href="/upload">Upload CVs</a>.</p>}
-        {rankedCards.map((c) => (
-          <CandidateCard key={c.id} c={c} role={role} mode={mode} testTo={testTo} open={c.rank! <= 5} />
-        ))}
-        {unranked.length > 0 && (
-          <>
-            <h1 style={{ marginTop: 24 }}>Not ranked ({unranked.length}): duplicates, errors, in progress</h1>
-            {unranked.map((c) => <CandidateCard key={c.id} c={c} role={role} mode={mode} testTo={testTo} open={false} />)}
-          </>
-        )}
       </main>
     </>
   );

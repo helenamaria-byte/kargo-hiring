@@ -11,6 +11,7 @@ export async function generateJSON<T>(opts: {
   prompt: string;
   schema: Schema;
   pii: PII;
+  temperature?: number;
 }): Promise<T> {
   // The system prompt is static rubric text; the prompt carries all candidate-derived text.
   assertNoPII(opts.prompt, opts.pii);
@@ -25,7 +26,12 @@ export async function generateJSON<T>(opts: {
       const res = await ai.models.generateContent({
         model: model(),
         contents: opts.prompt,
-        config: { systemInstruction: opts.system, responseMimeType: 'application/json', responseSchema: opts.schema },
+        config: {
+          systemInstruction: opts.system,
+          responseMimeType: 'application/json',
+          responseSchema: opts.schema,
+          ...(opts.temperature !== undefined ? { temperature: opts.temperature } : {}),
+        },
       });
       const text = res.text;
       if (!text) throw new Error(`Gemini returned no text (finish reason: ${res.candidates?.[0]?.finishReason ?? 'unknown'})`);

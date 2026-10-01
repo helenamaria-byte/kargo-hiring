@@ -1,17 +1,37 @@
 'use client';
-import { useEffect, useState } from 'react';
+import Link from 'next/link';
+import { useEffect, useRef, useState } from 'react';
 import { Nav } from '@/components/Nav';
 import { runDrafts } from '@/components/runDrafts';
 
-type Row = { file: File; state: 'queued' | 'processing' | 'scored' | 'duplicate' | 'error'; detail?: string };
-const CONCURRENCY = 2;
+type State = 'queued' | 'uploading' | 'scoring' | 'scored' | 'duplicate' | 'error';
+type Item = { file: File; state: State; pct: number; detail?: string };
+const CONCURRENCY = 1;
 const MAX_BYTES = 4 * 1024 * 1024; // Vercel's request body limit is 4.5 MB
+const ACCEPT = /\.(pdf|docx)$/i;
+
+// One CV per request, with real upload progress; scoring time is shown as an animated bar.
+function uploadOne(file: File, role: string, onProgress: (pct: number) => void): Promise<{ status: string; id?: number; duplicateOf?: number; error?: string }> {
+  return new Promise((resolve) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', '/api/process');
+    xhr.upload.onprogress = (e) => e.lengthComputable && onProgress(Math.round((e.loaded / e.total) * 100));
+    xhr.onload = () => { try { resolve(JSON.parse(xhr.responseText)); } catch { resolve({ status: 'error', error: `HTTP ${xhr.status}` }); } };
+    xhr.onerror = () => resolve({ status: 'error', error: 'Network error' });
+    const fd = new FormData();
+    fd.append('file', file);
+    fd.append('role', role);
+    xhr.send(fd);
+  });
+}
 
 export default function Upload() {
-  const [role, setRole] = useState<'' | 'PM' | 'SPM'>('');
-  const [rows, setRows] = useState<Row[]>([]);
+  const [role, setRole] = useState<'PM' | 'SPM'>('PM');
+  const [items, setItems] = useState<Item[]>([]);
   const [phase, setPhase] = useState<'idle' | 'scoring' | 'drafting' | 'done'>('idle');
+  const [over, setOver] = useState(false);
   const [draftMsg, setDraftMsg] = useState('');
+  const input = useRef<HTMLInputElement>(null);
   const running = phase === 'scoring' || phase === 'drafting';
 
   useEffect(() => {
@@ -21,29 +41,29 @@ export default function Upload() {
     return () => window.removeEventListener('beforeunload', warn);
   }, [running]);
 
-  const update = (i: number, patch: Partial<Row>) => setRows((rs) => rs.map((r, j) => (j === i ? { ...r, ...patch } : r)));
+  const add = (files: FileList | File[]) => {
+    const list = [...files].filter((f) => ACCEPT.test(f.name));
+    if (!list.length) return;
+    setItems((xs) => [...(phase === 'done' ? [] : xs), ...list.map((file) => ({ file, state: 'queued' as State, pct: 0 }))]);
+    if (phase === 'done') { setPhase('idle'); setDraftMsg(''); }
+  };
+  const update = (i: number, p: Partial<Item>) => setItems((xs) => xs.map((x, j) => (j === i ? { ...x, ...p } : x)));
 
   async function start() {
     setPhase('scoring');
     let next = 0;
+    const snapshot = items;
     const worker = async () => {
-      while (next < rows.length) {
+      while (next < snapshot.length) {
         const i = next++;
-        const { file } = rows[i];
-        if (file.size > MAX_BYTES) { update(i, { state: 'error', detail: 'File is over 4 MB, too large to upload' }); continue; }
-        update(i, { state: 'processing' });
-        try {
-          const fd = new FormData();
-          fd.append('file', file);
-          fd.append('role', role);
-          const res = await fetch('/api/process', { method: 'POST', body: fd });
-          const j = await res.json().catch(() => ({ status: 'error', error: `HTTP ${res.status}` }));
-          if (j.status === 'scored') update(i, { state: 'scored', detail: `candidate #${j.id}` });
-          else if (j.status === 'duplicate') update(i, { state: 'duplicate', detail: `duplicate of candidate #${j.duplicateOf}, not scored again` });
-          else update(i, { state: 'error', detail: j.error ?? 'Unknown error' });
-        } catch (e) {
-          update(i, { state: 'error', detail: e instanceof Error ? e.message : String(e) });
-        }
+        if (snapshot[i].state !== 'queued') continue;
+        const { file } = snapshot[i];
+        if (file.size > MAX_BYTES) { update(i, { state: 'error', pct: 100, detail: 'Over 4 MB: too large' }); continue; }
+        update(i, { state: 'uploading', pct: 0 });
+        const j = await uploadOne(file, role, (pct) => update(i, { pct: Math.min(pct, 99), state: pct >= 100 ? 'scoring' : 'uploading' }));
+        if (j.status === 'scored') update(i, { state: 'scored', pct: 100, detail: 'Scored' });
+        else if (j.status === 'duplicate') update(i, { state: 'duplicate', pct: 100, detail: `Duplicate of #${j.duplicateOf}` });
+        else update(i, { state: 'error', pct: 100, detail: j.error ?? 'Failed' });
       }
     };
     await Promise.all(Array.from({ length: CONCURRENCY }, worker));
@@ -52,60 +72,66 @@ export default function Upload() {
     setPhase('done');
   }
 
-  const count = (s: Row['state']) => rows.filter((r) => r.state === s).length;
-  const finished = rows.length - count('queued') - count('processing');
+  const count = (s: State) => items.filter((x) => x.state === s).length;
+  const finished = count('scored') + count('duplicate') + count('error');
 
   return (
     <>
       <Nav on="upload" />
-      <main>
-        <h1>Upload CVs</h1>
-        <div className="bar">
-          <strong>Role for this batch:</strong>
-          {(['PM', 'SPM'] as const).map((r) => (
-            <label key={r} style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
-              <input type="radio" name="role" style={{ width: 'auto' }} checked={role === r} disabled={running} onChange={() => setRole(r)} />
-              {r === 'PM' ? 'Product Manager' : 'Senior Product Manager'}
-            </label>
-          ))}
-        </div>
-        <div className="bar">
-          <input
-            type="file" multiple accept=".pdf,.docx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-            disabled={running} style={{ maxWidth: 420 }}
-            onChange={(e) => { setRows([...(e.target.files ?? [])].map((file) => ({ file, state: 'queued' }))); setPhase('idle'); setDraftMsg(''); }}
-          />
-          <button className="primary" disabled={!role || !rows.length || running || phase === 'done'} onClick={start}>
-            Process {rows.length || ''} CV{rows.length === 1 ? '' : 's'}
-          </button>
-        </div>
-        <p className="muted">
-          PDF or DOCX. Each CV is its own job: one failure never stops the batch. Every CV is scored on both the PM and SPM rubrics.
-          Name, email and phone are removed in code before any AI step. Drafts are generated after the whole batch is scored, because the top 5 depends on the full ranking.
-        </p>
+      <main className="page">
+        <h1>Upload new CVs</h1>
+        <p className="muted">PDF or Word. Each CV is scored on both rubrics; names, emails and phone numbers are removed before any AI step.</p>
 
-        {rows.length > 0 && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginTop: 28 }}>
+          <span className="small muted">These CVs are for</span>
+          <div className="seg" role="radiogroup">
+            {(['PM', 'SPM'] as const).map((r) => (
+              <button key={r} role="radio" aria-checked={role === r} className={role === r ? 'on' : ''} disabled={running} onClick={() => setRole(r)}>
+                {r === 'PM' ? 'Product Manager' : 'Senior Product Manager'}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div
+          className={`drop${over ? ' over' : ''}`}
+          onClick={() => !running && input.current?.click()}
+          onDragOver={(e) => { e.preventDefault(); setOver(true); }}
+          onDragLeave={() => setOver(false)}
+          onDrop={(e) => { e.preventDefault(); setOver(false); if (!running) add(e.dataTransfer.files); }}
+        >
+          <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" strokeWidth="2" strokeLinecap="round"><path d="M12 16V4M7 9l5-5 5 5M5 20h14" /></svg>
+          <div className="t">Drop CVs here</div>
+          <div className="muted small">or click to choose files</div>
+          <input ref={input} type="file" multiple hidden accept=".pdf,.docx" onChange={(e) => { if (e.target.files) add(e.target.files); e.target.value = ''; }} />
+        </div>
+
+        {items.length > 0 && (
           <>
-            <div className="bar">
-              <strong>{finished}/{rows.length} processed</strong>
-              <span className="ok">{count('scored')} scored</span>
-              <span className="flag">{count('duplicate')} duplicates</span>
-              <span className="err">{count('error')} errors</span>
-              {phase === 'drafting' && <span>Writing briefs and emails… {draftMsg}</span>}
-              {phase === 'done' && <span>{draftMsg} <a href={`/?role=${role}`}>Open the dashboard →</a></span>}
+            <div className="toolbar" style={{ marginBottom: 8 }}>
+              <span className="small"><b>{finished}</b> of {items.length} done</span>
+              <span className="small" style={{ color: 'var(--ready)' }}>{count('scored')} scored</span>
+              {count('duplicate') > 0 && <span className="small" style={{ color: 'var(--check)' }}>{count('duplicate')} duplicate</span>}
+              {count('error') > 0 && <span className="small" style={{ color: 'var(--error)' }}>{count('error')} failed</span>}
+              <span className="sp" />
+              {phase === 'idle' && <button className="btn primary" onClick={start}>Score {count('queued')} CV{count('queued') === 1 ? '' : 's'}</button>}
+              {phase === 'drafting' && <span className="small muted">Writing briefs and emails… {draftMsg}</span>}
+              {phase === 'done' && <Link className="btn primary" href={`/review?role=${role}`} style={{ textDecoration: 'none' }}>View rankings</Link>}
             </div>
-            <progress max={rows.length} value={finished} style={{ width: '100%' }} />
-            <table>
-              <tbody>
-                {rows.map((r, i) => (
-                  <tr key={i}>
-                    <td>{r.file.name}</td>
-                    <td className={r.state === 'error' ? 'err' : r.state === 'duplicate' ? 'flag' : r.state === 'scored' ? 'ok' : 'muted'}>{r.state}</td>
-                    <td className="muted">{r.detail}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+            {phase === 'done' && draftMsg && <p className="small muted">{draftMsg}</p>}
+            <div className="files">
+              {items.map((x, i) => (
+                <div className="file" key={i}>
+                  <span className="fn">{x.file.name}</span>
+                  <span className={`prog ${x.state === 'scoring' ? 'busy' : x.state === 'scored' ? 'done' : x.state === 'duplicate' ? 'dup' : x.state === 'error' ? 'fail' : ''}`}>
+                    <i style={{ width: `${x.state === 'queued' ? 0 : x.pct}%` }} />
+                  </span>
+                  <span className="res" style={{ color: x.state === 'error' ? 'var(--error)' : x.state === 'duplicate' ? 'var(--check)' : x.state === 'scored' ? 'var(--ready)' : 'var(--ink-3)' }}>
+                    {x.state === 'queued' ? 'Waiting' : x.state === 'uploading' ? `Uploading ${x.pct}%` : x.state === 'scoring' ? 'Scoring…' : x.detail}
+                  </span>
+                </div>
+              ))}
+            </div>
           </>
         )}
       </main>
