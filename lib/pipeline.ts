@@ -150,14 +150,14 @@ export async function score(id: number) {
     const items = criteria.map((cr) => {
       const x = a.get(cr.id)!, y = b.get(cr.id)!;
       const r = reconcile(x.score, y.score);
-      const chosen = r.score === null ? (x.score === null ? x : y) : r.from === 0 ? x : y;
+      const chosen = r.from === 0 ? x : y;
       if (r.inconsistent) inconsistent.push(`${role} “${cr.name}” (${x.score ?? '—'} vs ${y.score ?? '—'})`);
       const probe = r.score === null ? (chosen.probe || x.probe || y.probe || `Ask for a concrete example of: ${cr.name.toLowerCase()}.`) : chosen.probe;
       scoreRows.push({
         candidate_id: id, criterion_id: cr.id, role, score: r.score,
-        evidence: r.score === null ? null : chosen.evidence,
-        quote_verified: r.score === null ? null : chosen.verified,
-        reason: r.inconsistent && r.score === null ? `The two scoring runs disagreed on whether there is evidence (${x.score ?? 'none'} vs ${y.score ?? 'none'}).` : chosen.reason,
+        evidence: r.score === null || chosen.score === null ? null : chosen.evidence,
+        quote_verified: r.score === null || chosen.score === null ? null : chosen.verified,
+        reason: (x.score === null) !== (y.score === null) ? `No credit: only one of the two scoring runs found evidence (${x.score ?? 'none'} vs ${y.score ?? 'none'}).` : chosen.reason,
         probe_question: probe,
       });
       return { name: cr.name, weight: cr.weight, score: r.score };

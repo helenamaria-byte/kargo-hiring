@@ -44,10 +44,11 @@ export const SHORTLIST_MIN = 75;
 // Below this share of rubric weight backed by evidence, a total is flagged as resting on thin evidence.
 export const THIN_EVIDENCE_PCT = 60;
 
-// Two scoring runs → one score per criterion. Uses the lower score; a gap of more than 1, or one run
-// finding evidence the other did not, marks the criterion inconsistent (and keeps no score for the latter).
+// Two scoring runs → one score per criterion, always the lower. When only one run found evidence, the
+// other counts as the starting 1 (no credit), so a disagreement can never empty a criterion and lift the
+// total. A gap of more than 1 marks the criterion inconsistent.
 export function reconcile(a: number | null, b: number | null): { score: number | null; from: 0 | 1; inconsistent: boolean } {
   if (a === null && b === null) return { score: null, from: 0, inconsistent: false };
-  if (a === null || b === null) return { score: null, from: a === null ? 0 : 1, inconsistent: true };
-  return { score: Math.min(a, b), from: a <= b ? 0 : 1, inconsistent: Math.abs(a - b) > 1 };
+  const x = a ?? 1, y = b ?? 1;
+  return { score: Math.min(x, y), from: x <= y ? 0 : 1, inconsistent: Math.abs(x - y) > 1 };
 }

@@ -148,13 +148,14 @@ test('ranking: ties go to the higher operations score', async () => {
   assert.deepEqual(r.map((x) => x.id), [3, 2, 1]);
 });
 
-test('two runs: lower score wins; gap >1 or evidence in only one run is inconsistent', async () => {
+test('two runs: lower score wins; a missing run counts as 1; gap >1 is inconsistent', async () => {
   const { reconcile } = await import('../lib/scoring.ts');
   assert.deepEqual(reconcile(4, 4), { score: 4, from: 0, inconsistent: false });
   assert.deepEqual(reconcile(4, 3), { score: 3, from: 1, inconsistent: false });
   assert.deepEqual(reconcile(5, 2), { score: 2, from: 1, inconsistent: true });
-  assert.equal(reconcile(null, 3).inconsistent, true);
-  assert.equal(reconcile(null, 3).score, null);
+  assert.deepEqual(reconcile(null, 3), { score: 1, from: 0, inconsistent: true });
+  assert.deepEqual(reconcile(1, null), { score: 1, from: 0, inconsistent: false });
+  assert.deepEqual(reconcile(null, null), { score: null, from: 0, inconsistent: false });
 });
 
 test('evidence: CV split into numbered lines with sections; quotes located; numbers detected', async () => {
