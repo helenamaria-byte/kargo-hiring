@@ -2,7 +2,7 @@
 
 An internal tool for a founder (Arjun, Kargo) who has 60 CVs, two open roles (Product Manager and Senior Product Manager) and no time. Upload the CVs; the system strips personal details, scores every CV against a hiring rubric built from his best past hires, ranks the candidates, writes interview briefs and personalised emails, and leaves **every decision and every send to him**.
 
-**Live:** https://kargo-hiring-one.vercel.app (password-protected; it holds candidates' personal details)
+**Live:** https://kargo-hiring-one.vercel.app (open for review; the case data is fictional and test mode sends every email to one test inbox. Set `DASHBOARD_PASSWORD` to lock it.)
 
 Stack: Next.js 16 · Supabase (Postgres) · Gemini Flash Lite for every AI step · Resend for email · Vercel.
 
@@ -64,7 +64,7 @@ Never scored: college, company brand, certifications, age, gender, name, religio
 ## Run it yourself
 
 1. Create a Supabase project and run `supabase/setup.sql` (schema + rubric seed) in the SQL editor, or `npm run db:setup` with `DATABASE_URL` set. `npm run rubric:build` regenerates the seed from `rubric/rubric.txt` and refuses if either role's weights don't sum to 100; the database also rejects any change that breaks that.
-2. Copy `.env.example` to `.env.local` and fill it in (Supabase service-role key, Gemini key, optional Resend key and sender, a site password).
+2. Copy `.env.example` to `.env.local` and fill it in (Supabase service-role key, Gemini key, optional Resend key and sender, optional site password).
 3. `npm install`, `npm test`, `npm run dev`.
 4. Deploy: `npx vercel --prod` with the same environment variables.
 

@@ -1,13 +1,11 @@
 import { NextResponse, type NextRequest } from 'next/server';
 
-// The dashboard holds candidates' personal details and can send email, so the whole site sits
-// behind one password (HTTP Basic auth — any username, password = DASHBOARD_PASSWORD).
+// Optional site password (HTTP Basic auth — any username, password = DASHBOARD_PASSWORD).
+// With DASHBOARD_PASSWORD unset the site is open to anyone with the link — fine for the fictional case
+// data used here; set it again before real candidates' details are uploaded.
 export function proxy(req: NextRequest) {
   const password = process.env.DASHBOARD_PASSWORD;
-  if (!password) {
-    if (process.env.NODE_ENV !== 'production') return NextResponse.next();
-    return new NextResponse('Locked: set DASHBOARD_PASSWORD in Vercel environment variables, then redeploy.', { status: 503 });
-  }
+  if (!password) return NextResponse.next();
   const header = req.headers.get('authorization') ?? '';
   const [scheme, encoded] = header.split(' ');
   if (scheme === 'Basic' && encoded) {
