@@ -11,13 +11,13 @@ const URL_RE = /(?:https?:\/\/|www\.)\S+|\b[\w-]+(?:\.[\w-]+)*\.(?:com|in|io|app
 const NOT_A_NAME = /\b(university|college|institute|school|academy|iit|iim|imt|nit|bits|iiit|xlri|isb|resume|résumé|curriculum|vitae|cv|profile|summary|synopsis|contact|objective|experience|education|skills|address|email|phone|mobile|product|manager|engineer|senior|operations|linkedin|portfolio|strategy|strategic|marketing|leader|lead|corporate|executive|advisory|growth|ecommerce|commerce|consulting|analyst|founder|head|director|india|delhi|mumbai|bangalore|bengaluru|pune|chennai|hyderabad|kolkata|gurgaon|gurugram|noida|new|core|professional|achievements|projects|certifications|publications|research|scholastic|technical|work|history|career|key|highlights|languages|interests)\b/i;
 
 // PDFs often run text together: "ROHAN MEHTARohan Mehta", "tracking.SNEHA KULKARNI", "REDDYsquad_5@x.co",
-// "6403798210ravi-kumar". Put a space at those seams so names, emails and links can be found and removed.
+// "1111190000priya-k". Put a space at those seams so names, emails and links can be found and removed.
 export function unglue(text: string): string {
   return text
     .replace(/([A-Z]{2,})([a-z][\w.%+-]*@)/g, '$1 $2') // REDDYsquad_5@ -> REDDY squad_5@ (before the next rule)
     .replace(/([A-Z]{2,})([A-Z][a-z])/g, '$1 $2') // MEHTARohan -> MEHTA Rohan
     .replace(/([a-z.,;:)])([A-Z]{2,}\b)/g, '$1 $2') // tracking.SNEHA / MehtaROHAN -> split
-    .replace(/(\d{3,})([A-Za-z])/g, '$1 $2'); // 64037ravi -> 64037 ravi
+    .replace(/(\d{3,})([A-Za-z])/g, '$1 $2'); // 11111priya -> 11111 priya
 }
 
 function isPhone(candidate: string): boolean {

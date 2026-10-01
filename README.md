@@ -1,29 +1,89 @@
 # Kargo hiring dashboard
 
-Upload CVs → personal details stripped in code → Gemini scores every CV on both PM and SPM rubrics → code computes totals and ranks → top 5 per role get a brief and an invite draft, everyone else gets a specific rejection → Arjun edits and clicks **Confirm & Send** per card. Nothing sends automatically.
+An internal tool for a founder (Arjun, Kargo) who has 60 CVs, two open roles (Product Manager and Senior Product Manager) and no time. Upload the CVs; the system strips personal details, scores every CV against a hiring rubric built from his best past hires, ranks the candidates, writes interview briefs and personalised emails, and leaves **every decision and every send to him**.
 
-## Setup
+**Live:** https://kargo-hiring-one.vercel.app (password-protected; it holds candidates' personal details)
 
-1. **Supabase**: open the SQL editor, paste all of `supabase/setup.sql`, and run it. The last result should show `PM 5 100` and `SPM 5 100`.
-   (`setup.sql` is generated from `rubric/rubric.txt` by `npm run rubric:build`, which fails if either role's weights don't sum to 100. The database also rejects any change that breaks the 100 total.)
-2. **Env**: fill in `.env.local` (see `.env.example`). Use the **service_role / secret** key, not the anon key.
-3. `npm install && npm test && npm run dev`, then open http://localhost:3000.
-4. **Vercel**: `npx vercel`, add the same env vars in Project → Settings → Environment Variables (including `DASHBOARD_PASSWORD`), then `npx vercel --prod`.
+Stack: Next.js 16 · Supabase (Postgres) · Gemini Flash Lite for every AI step · Resend for email · Vercel.
 
-## Sending
+---
 
-- **Current (test mode):** `RESEND_FROM=Kargo Hiring <onboarding@resend.dev>` and `EMAIL_TO_OVERRIDE=helena_maria@pg27.mesaschool.co`. Confirm & Send sends directly via Resend, but every email goes to that inbox, subject-prefixed "[TEST for Name]" with the real recipient noted at the top. Without a verified domain, Resend only delivers to the Resend account's own address.
-- **Real sending:** verify a domain in Resend, set `RESEND_FROM` to an address on it, clear `EMAIL_TO_OVERRIDE`, redeploy (`npm run update:keys`).
-- **No Resend at all:** leave `RESEND_FROM` empty and the button opens a ready email in Gmail instead.
+## How it works
 
-## Where the rules live
+```
+CV (PDF/DOCX) ─► 1. strip name/email/phone/links in code ─► stored privately
+                    │
+                    ▼ anonymised text only
+                 2. Gemini scores it twice, both rubrics (temperature 0) ─► raw runs stored
+                    │
+                    ▼
+                 3. code applies the strictness policy ─► 1–5 per criterion, weighted 0–100, ranking
+                    │
+                    ▼
+                 4. top N per role at/above the threshold ─► 3-sentence brief + invite; everyone else ─► specific rejection
+                    │
+                    ▼
+                 5. Arjun reviews, edits, decides, and clicks Send (one email per click)
+```
 
-| Rule | File |
+**1. Privacy first, in code.** Name, email and phone are extracted with code, not AI, and removed from the text (`lib/pii.ts`). It handles PDFs that print the name twice and glue words together (`ROHAN MEHTARohan Mehta`), repeated phone numbers, and links that contain names. A guard runs before **every** AI call and throws if any name, email or phone is still present. The real first name is merged into an email only at the moment of sending.
+
+**2. Two AI runs, raw.** Each CV is split into numbered lines tagged by section (summary / experience) and scored twice against both rubrics. For every criterion the model must cite one CV line; the code checks the quote really is in the CV. Text in a CV addressed to the AI ("ignore previous instructions…") is stripped and flagged.
+
+**3. Strictness is code, not prompt** (`lib/policy.ts`). Because both raw runs are stored, the founder can change the rules and everyone re-ranks instantly with no new AI calls:
+
+| | Strict | Balanced (default) | Lenient |
+|---|---|---|---|
+| Two runs | lower score | average | average |
+| Number needed in evidence | for a 4 or 5 | for a 5 | never |
+| One CV line can back | 1 criterion | 2 criteria | any |
+| Summary-only claim scores up to | 1 | 2 | 3 |
+
+Weighted total = Σ(score × weight) / 5, from 0 to 100. Null scores (no evidence at all) are excluded and the remaining weights re-normalised. Ties are broken by the "Did the operations work themselves" score. Runs that differ by more than 1 are flagged *scores inconsistent*.
+
+**4. Shortlist.** Invites go to the top N applicants per role at or above the threshold (default: 5 and 65; both adjustable live). The founder can override anyone (★ shortlist / ✕ not moving forward).
+
+**5. Nothing sends by itself.** One Send button per candidate; in review mode the keyboard shortcuts need a double press. Already-sent candidates are locked and never re-drafted. In test mode (`EMAIL_TO_OVERRIDE`) every email goes to one inbox, labelled with who it was for.
+
+### Fairness rules (from the rubric)
+Never scored: college, company brand, certifications, age, gender, name, religion, caste, location, marital status, employment gaps. Evidence or no score. Every CV is scored against both rubrics. A strong candidate with no operations background is flagged *strong outsider*, never silently dropped.
+
+---
+
+## The review page
+
+- Ranked list per role in three sections: **Invite**, **Needs your eye** (flagged), **Not moving forward**
+- Live **threshold slider** over a score histogram, **invites per role** stepper, **Strict / Balanced / Lenient** with fine-tuning
+- Search, filters, sort by any criterion; ★ / ✕ overrides; **J/K** keyboard navigation
+- Side panel: brief and recommended action → probe questions → criterion scores as dots (evidence behind "Show evidence") → editable email + Send → personal details
+- **Start reviewing**: one candidate at a time with Send invite / Send rejection / Skip (I / R / S)
+- Drafts that no longer match a decision are marked; **Update drafts** rewrites them
+
+---
+
+## Run it yourself
+
+1. Create a Supabase project and run `supabase/setup.sql` (schema + rubric seed) in the SQL editor, or `npm run db:setup` with `DATABASE_URL` set. `npm run rubric:build` regenerates the seed from `rubric/rubric.txt` and refuses if either role's weights don't sum to 100; the database also rejects any change that breaks that.
+2. Copy `.env.example` to `.env.local` and fill it in (Supabase service-role key, Gemini key, optional Resend key and sender, a site password).
+3. `npm install`, `npm test`, `npm run dev`.
+4. Deploy: `npx vercel --prod` with the same environment variables.
+
+Useful scripts: `npm run check:keys` (tests each key), `npm run verify` (privacy and scoring checks on the whole batch), `npm run update:keys` (copy keys to Vercel and redeploy).
+
+## Where things live
+
+| What | File |
 |---|---|
-| Name/email/phone removed before any AI call; guard throws if any leaks | `lib/pii.ts`, `lib/gemini.ts` |
-| Rubric parsed + validated (weights = 100) | `lib/rubric-parse.mjs`, `supabase/schema.sql` trigger |
-| Scoring prompt: evidence quote or null, no bias factors, ignore text aimed at AI | `lib/prompts.ts` |
-| Weighted total, re-normalising nulls, ranking, strong outsider | `lib/scoring.ts` (tested against the rubric's calibration table) |
-| Duplicate detection (on redacted text) | `lib/dedupe.ts` |
-| Pipeline, top-5 briefs, invite/rejection drafts | `lib/pipeline.ts` |
-| Name merged into email at send time only | `app/api/send/[id]/route.ts` |
+| Personal-detail removal + guard | `lib/pii.ts`, `lib/gemini.ts` |
+| CV → numbered, sectioned lines | `lib/evidence.ts` |
+| Rubric parsing and the weights-sum-to-100 check | `lib/rubric-parse.mjs`, `supabase/schema.sql` |
+| Scoring prompt and schema | `lib/prompts.ts` |
+| Strictness policy (pure code) | `lib/policy.ts` |
+| Weighted totals, ranking, outsider rule | `lib/scoring.ts` |
+| Pipeline: ingest, score, recompute, drafts | `lib/pipeline.ts` |
+| Duplicate detection | `lib/dedupe.ts` |
+| Review UI | `components/Review.tsx`, `app/review/page.tsx` |
+| Send (name merged at send time only) | `app/api/send/[id]/route.ts` |
+| Tests (calibration table, privacy, policy) | `tests/` |
+
+The unit tests reproduce the rubric's own calibration table (e.g. Lavanya 100, Vikram 35). Test CVs in `tests/fixtures` are fictional. Kargo, Arjun and all case data are fictional (MESA School of Business case study).

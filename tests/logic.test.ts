@@ -120,20 +120,20 @@ test('PII: name taken from the file name when the CV has none, and still removed
 });
 
 test('PII: a phone number repeated back to back, or written without the country code, is fully removed', () => {
-  const cv = 'Product Manager\nx@example.com | +91 99014 28453+91 99014 28453 99014 28453 9901428453\nCall 99014-28453 anytime.';
+  const cv = 'Product Manager\nx@example.com | +91 90000 11111+91 90000 11111 90000 11111 9000011111\nCall 90000-11111 anytime.';
   const { pii, redacted } = extractPII(cv, '30_aman_borkar.pdf');
-  assert.ok(!/99014|28453|9901428453/.test(redacted), redacted);
+  assert.ok(!/90000 11111|11111|9000011111/.test(redacted), redacted);
   assert.doesNotThrow(() => assertNoPII(redacted, pii));
-  assert.throws(() => assertNoPII('reach me on 9901428453', pii), /phone/);
+  assert.throws(() => assertNoPII('reach me on 9000011111', pii), /phone/);
 });
 
 test('PII: name printed twice and glued at the END of the text is found in the CV, not the file name', () => {
-  const cv = 'Strategy & Operations Leader | Corporate Strategy\nEXPERIENCE\nRan carrier onboarding for 40 shippers.\n+91 98210 64037 98210 64037ravi-kumar-pm https://pranavjoshi.vercel.app/\nROHAN MEHTARohan Mehta\nREDDYsquad_5@pg27.example.co';
+  const cv = 'Strategy & Operations Leader | Corporate Strategy\nEXPERIENCE\nRan carrier onboarding for 40 shippers.\n+91 90000 22222 90000 22222ravi-kumar-pm https://pranavjoshi.vercel.app/\nROHAN MEHTARohan Mehta\nREDDYsquad_5@pg27.example.co';
   const { pii, redacted, nameSource } = extractPII(cv, '01_some_file.pdf');
   assert.equal(pii.name, 'Rohan Mehta');
   assert.equal(nameSource, 'cv');
   assert.equal(pii.email, 'squad_5@pg27.example.co');
-  assert.ok(!/rohan|mehta|98210|64037|pranav|vercel/i.test(redacted), redacted);
+  assert.ok(!/rohan|mehta|90000|22222|pranav|vercel/i.test(redacted), redacted);
   assert.ok(redacted.includes('Corporate Strategy'), 'job-title header is not mistaken for the name');
 });
 
