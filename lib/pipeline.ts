@@ -81,10 +81,12 @@ function judgeRun(out: ScoringResult, criteria: Criterion[], segs: Segment[]): M
     let probe = r?.probe_question?.trim() || null;
     const seg = quote ? locate(segs, r?.evidence_line, quote) : null;
     if (s !== null && !quote) s = null; // evidence or no score
-    if (s !== null && (r?.evidence_source !== 'work_history' || seg?.section === 'summary')) {
-      s = null; // only work history counts
-      reason = 'Only a summary or profile claim supports this; no work-history bullet does.';
-      probe = probe || `Which job shows this in practice: ${cr.name.toLowerCase()}? Ask for a specific example.`;
+    if (s !== null) probe = null; // probe questions belong to criteria without a score, unless set below
+    if (s !== null && s > 1 && (r?.evidence_source !== 'work_history' || seg?.section === 'summary')) {
+      // Only work history counts: a summary/profile claim earns nothing, i.e. stays at the starting 1.
+      s = 1;
+      reason = 'No credit: only a summary or profile claim supports this; no job bullet does.';
+      probe = `Which job shows this in practice: ${cr.name.toLowerCase()}? Ask for a specific example.`;
     }
     if (s !== null && s >= 4 && !hasNumber(quote)) {
       s = 3; // 4 or 5 needs a number
@@ -92,9 +94,11 @@ function judgeRun(out: ScoringResult, criteria: Criterion[], segs: Segment[]): M
     }
     res.set(cr.id, { score: s, evidence: s === null ? null : quote, verified: s === null ? null : Boolean(seg), lineId: seg?.id ?? null, reason, probe });
   }
-  // One line, one criterion: keep it for the criterion it adds most to (score × weight), drop it elsewhere.
+  // One line, one criterion — for evidence that earns credit (2+). Keep the line for the criterion it adds
+  // most to (score × weight); elsewhere the criterion gets no credit from it and stays at 1.
+  // (A 1 citing a job-title line as proof of absence may share that line.)
   const byLine = new Map<number, number[]>();
-  for (const [cid, j] of res) if (j.score !== null && j.lineId !== null) byLine.set(j.lineId, [...(byLine.get(j.lineId) ?? []), cid]);
+  for (const [cid, j] of res) if (j.score !== null && j.score >= 2 && j.lineId !== null) byLine.set(j.lineId, [...(byLine.get(j.lineId) ?? []), cid]);
   for (const cids of byLine.values()) {
     if (cids.length < 2) continue;
     const w = (cid: number) => (res.get(cid)!.score ?? 0) * (criteria.find((c) => c.id === cid)?.weight ?? 0);
@@ -103,8 +107,8 @@ function judgeRun(out: ScoringResult, criteria: Criterion[], segs: Segment[]): M
     for (const cid of drop) {
       const cr = criteria.find((c) => c.id === cid)!;
       res.set(cid, {
-        score: null, evidence: null, verified: null, lineId: null,
-        reason: `The only evidence was the same CV line already used for “${keptName}”.`,
+        ...res.get(cid)!, score: 1,
+        reason: `No credit: its only evidence is the CV line already used for “${keptName}”.`,
         probe: `Ask for a separate example of: ${cr.name.toLowerCase()}.`,
       });
     }
@@ -148,7 +152,7 @@ export async function score(id: number) {
       const r = reconcile(x.score, y.score);
       const chosen = r.score === null ? (x.score === null ? x : y) : r.from === 0 ? x : y;
       if (r.inconsistent) inconsistent.push(`${role} “${cr.name}” (${x.score ?? '—'} vs ${y.score ?? '—'})`);
-      const probe = r.score === null ? (chosen.probe || x.probe || y.probe || `Ask for a concrete example of: ${cr.name.toLowerCase()}.`) : null;
+      const probe = r.score === null ? (chosen.probe || x.probe || y.probe || `Ask for a concrete example of: ${cr.name.toLowerCase()}.`) : chosen.probe;
       scoreRows.push({
         candidate_id: id, criterion_id: cr.id, role, score: r.score,
         evidence: r.score === null ? null : chosen.evidence,

@@ -127,7 +127,7 @@ function Panel({ r, mode, testTo, patch, draft: ext, setDraft: setExt, hideSend 
   const [opened, setOpened] = useState(false);
   const [editing, setEditing] = useState(false);
   const [contact, setContact] = useState({ name: r.name, email: r.email ?? '' });
-  const probes = r.criteria.filter((c) => c.score === null && c.probe);
+  const probes = r.criteria.filter((c) => c.probe);
   const dirty = d.subject !== (r.draft?.subject ?? '') || d.body !== (r.draft?.body ?? '');
   const real = r.flags.filter((f) => !INFO_FLAGS.has(f.type));
   const info = r.flags.filter((f) => INFO_FLAGS.has(f.type));
