@@ -14,14 +14,14 @@ export default async function ReviewPage({ searchParams }: { searchParams: Promi
   return (
     <>
       <Nav on="review" />
-      <main className="page">
+      <main className="page wide">
         {data?.mode === 'resend' && data.testTo && (
           <div className="banner">Test mode: every email is sent to <b>{data.testTo}</b>, not to candidates.</div>
         )}
         {data?.mode === 'gmail' && <div className="banner">Sending through Gmail: Send opens a ready email in Gmail.</div>}
         <h1>Review candidates</h1>
         {error && <p className="note err">Could not load candidates: {error}</p>}
-        {data && <Review role={role} rows={data.rows} threshold={data.threshold} topN={data.topN} mode={data.mode} testTo={data.testTo} />}
+        {data && <Review {...data} />}
       </main>
     </>
   );

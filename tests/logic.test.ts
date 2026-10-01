@@ -168,3 +168,22 @@ test('evidence: CV split into numbered lines with sections; quotes located; numb
   assert.equal(hasNumber('adopted by two other teams'), true);
   assert.equal(hasNumber('improved the process significantly'), false);
 });
+
+test('policy: presets change scores in code, from the same raw runs', async () => {
+  const { applyRun, combine, PRESETS } = await import('../lib/policy.ts');
+  const run = (score: number | null, extra: Partial<import('../lib/policy.ts').RawRun> = {}): import('../lib/policy.ts').RawRun => ({ score, quote: 'q', source: 'work_history', line: 1, verified: true, number: false, reason: 'r', probe: '', ...extra });
+  const crit = [{ id: 1, weight: 30, name: 'A' }, { id: 2, weight: 25, name: 'B' }, { id: 3, weight: 20, name: 'C' }];
+  const raw = [run(5, { line: 7 }), run(4, { line: 7 }), run(4, { source: 'summary', line: 9 })];
+  const strict = applyRun(crit.map((c, i) => ({ ...c, run: raw[i] })), PRESETS.strict);
+  assert.deepEqual([...strict.values()].map((a) => a.score), [3, 1, 1]); // no number → 3; line reused → 1; summary → 1
+  const bal = applyRun(crit.map((c, i) => ({ ...c, run: raw[i] })), PRESETS.balanced);
+  assert.deepEqual([...bal.values()].map((a) => a.score), [4, 4, 2]); // 5 needs a number → 4; line may back 2; summary ≤ 2
+  const len = applyRun(crit.map((c, i) => ({ ...c, run: raw[i] })), PRESETS.lenient);
+  assert.deepEqual([...len.values()].map((a) => a.score), [5, 4, 3]);
+  const A = (s: number | null) => ({ score: s, quote: 'q', verified: true, reason: '', probe: null, note: null });
+  assert.equal(combine(A(4), A(2), PRESETS.strict).score, 2);
+  assert.equal(combine(A(4), A(2), PRESETS.balanced).score, 3);
+  assert.equal(combine(A(4), A(2), PRESETS.balanced).inconsistent, true);
+  assert.equal(combine(A(3), A(null), PRESETS.balanced).score, 2); // a run with no evidence counts as 1
+  assert.equal(combine(A(null), A(null), PRESETS.balanced).score, null);
+});
